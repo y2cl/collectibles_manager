@@ -41,3 +41,6 @@ node_modules/
 
 # Archived utilities
 utility/old/
+
+# App runtime preferences
+collections/owner_settings.json
