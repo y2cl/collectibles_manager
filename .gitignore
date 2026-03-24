@@ -1,0 +1,43 @@
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# OS/editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Environment and tooling
+.env
+.env.*
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# Streamlit
+.streamlit/secrets.toml
+.streamlit/*.toml
+
+# Logs
+*.log
+logs/
+
+# Project data (local-only)
+# If you decide to version some CSVs later, remove or narrow these patterns.
+collections/*.csv
+collections/**/*.csv
+fallback_data/
+
+# Misc
+node_modules/
+
+# Archived utilities
+utility/old/
