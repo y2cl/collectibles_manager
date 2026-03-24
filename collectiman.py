@@ -1,5 +1,7 @@
 import os
 import io
+import shutil
+import zipfile
 import time
 import math
 import json
@@ -39,15 +41,145 @@ def get_collections_dir() -> str:
         pass
     return coll_dir
 
+# Owner helpers
+def _sanitize_owner_id(name: str) -> str:
+    import re as _re
+    return _re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-")
+
+def _owner_folder_label(name: str) -> str:
+    base = (name or "").strip()
+    if not base:
+        return ""
+    return f"{base}" + ("'" if base.endswith("s") else "s") + " Collection"
+
+def list_owner_folders() -> List[str]:
+    """List existing owner folders under collections/."""
+    out: List[str] = []
+    try:
+        coll_dir = get_collections_dir()
+        for entry in os.listdir(coll_dir):
+            p = os.path.join(coll_dir, entry)
+            if os.path.isdir(p):
+                out.append(entry)
+    except Exception:
+        pass
+    return sorted(out)
+
+def _owner_prefs_path() -> str:
+    base = get_collections_dir()
+    return os.path.join(base, 'owner_settings.json')
+
+def load_owner_prefs() -> Dict:
+    try:
+        path = _owner_prefs_path()
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+def save_owner_prefs(prefs: Dict) -> bool:
+    try:
+        path = _owner_prefs_path()
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(prefs or {}, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+def _sanitize_profile_id(name: str) -> str:
+    import re as _re
+    return _re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-") or "default"
+
+def _get_active_profile_map() -> Dict[str, str]:
+    """Returns mapping {owner_label: profile_id}. Stored in session and on disk."""
+    m = st.session_state.get('active_profiles')
+    if isinstance(m, dict):
+        return m
+    prefs = load_owner_prefs()
+    m2 = prefs.get('active_profiles', {}) if isinstance(prefs, dict) else {}
+    if not isinstance(m2, dict):
+        m2 = {}
+    st.session_state['active_profiles'] = m2
+    return m2
+
+def _get_active_profile_for_owner_label(owner_label: str) -> str:
+    m = _get_active_profile_map()
+    return m.get(owner_label, 'default')
+
+def _set_active_profile_for_owner_label(owner_label: str, profile_id: str) -> None:
+    m = _get_active_profile_map()
+    m[owner_label] = profile_id or 'default'
+    st.session_state['active_profiles'] = m
+    # persist
+    prefs = load_owner_prefs()
+    if not isinstance(prefs, dict):
+        prefs = {}
+    prefs['active_profiles'] = m
+    save_owner_prefs(prefs)
+
+def owner_relative_filename(owner: Optional[str], base_filename: str) -> str:
+    """Return a path relative to collections/ honoring owner folder and prefix, or base file when no owner."""
+    owner = (owner or '').strip()
+    if not owner or owner.lower() == 'default':
+        return base_filename
+    folder = _owner_folder_label(owner)
+    oid = _sanitize_owner_id(owner)
+    # Convert mtg_collection.csv -> {oid}-mtg_collection.csv
+    parts = base_filename.split('/')[-1]
+    # Insert active profile if not default
+    profile = _get_active_profile_for_owner_label(folder)
+    if profile and profile != 'default':
+        rel = os.path.join(folder, f"{oid}-{profile}-{parts}")
+    else:
+        rel = os.path.join(folder, f"{oid}-{parts}")
+    return rel
+
+def ensure_owner_backfill(owner: str, current_collection: List[Dict]):
+    """If selecting a non-default owner and their CSVs don't exist yet, backfill from current data."""
+    if not owner or owner.lower() == 'default':
+        return
+    coll_dir = get_collections_dir()
+    # Build owner file paths
+    mtg_rel = owner_relative_filename(owner, 'mtg_collection.csv')
+    pkmn_rel = owner_relative_filename(owner, 'pokemon_collection.csv')
+    uni_rel = owner_relative_filename(owner, 'unified_collection.csv')
+    paths = [mtg_rel, pkmn_rel, uni_rel]
+    need_backfill = False
+    for rel in paths:
+        if not os.path.exists(os.path.join(coll_dir, rel)):
+            need_backfill = True
+            break
+    if not need_backfill:
+        return
+    # Prepare per-game subsets
+    mtg_cards = [c for c in current_collection if c.get('game') == 'Magic: The Gathering']
+    pokemon_cards = [c for c in current_collection if c.get('game') == 'Pokémon']
+    # Save
+    save_collection_to_csv(current_collection, uni_rel)
+    if mtg_cards:
+        save_collection_to_csv(mtg_cards, mtg_rel)
+    if pokemon_cards:
+        save_collection_to_csv(pokemon_cards, pkmn_rel)
+
 # Initialize session state defaults
 def load_csv_collections():
     """Load collections from CSV files in the collections folder"""
     collections = []
     coll_dir = get_collections_dir()
+    # Resolve owner-aware file locations
+    try:
+        owner_label = st.session_state.get('current_owner_label', st.session_state.get('default_owner_label', 'Default'))
+    except Exception:
+        owner_label = 'Default'
+    owner = _owner_from_folder_label(owner_label)
     
     # Load MTG collection
     try:
-        mtg_file = os.path.join(coll_dir, "mtg_collection.csv")
+        mtg_rel = owner_relative_filename(owner, "mtg_collection.csv")
+        mtg_file = os.path.join(coll_dir, mtg_rel)
         if os.path.exists(mtg_file):
             with open(mtg_file, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
@@ -78,6 +210,7 @@ def load_csv_collections():
                             "game": row.get('game', 'Magic: The Gathering'),
                             "name": row.get('name', ''),
                             "set": row.get('set', ''),
+                            "set_code": row.get('set_code', ''),
                             "link": row.get('link', ''),
                             "image_url": row.get('image_url', ''),
                             "price_usd": price_val,
@@ -106,8 +239,10 @@ def load_csv_collections():
     
     # Load Pokemon collection
     try:
-        pokemon_file = os.path.join(coll_dir, "pokemon_collection.csv")
-        unified_file = os.path.join(coll_dir, "unified_collection.csv")
+        pokemon_rel = owner_relative_filename(owner, "pokemon_collection.csv")
+        unified_rel = owner_relative_filename(owner, "unified_collection.csv")
+        pokemon_file = os.path.join(coll_dir, pokemon_rel)
+        unified_file = os.path.join(coll_dir, unified_rel)
         if os.path.exists(pokemon_file):
             with open(pokemon_file, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
@@ -138,6 +273,7 @@ def load_csv_collections():
                             "game": row.get('game', 'Pokémon'),
                             "name": row.get('name', ''),
                             "set": row.get('set', ''),
+                            "set_code": row.get('set_code', ''),
                             "link": row.get('link', ''),
                             "image_url": row.get('image_url', ''),
                             "price_usd": price_val,
@@ -164,44 +300,7 @@ def load_csv_collections():
     except Exception as e:
         print(f"❌ Error loading Pokemon collection: {e}")
     
-    # Optionally merge unified collection (without duplicating existing by game)
-    try:
-        if os.path.exists(unified_file):
-            with open(unified_file, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    if row.get('name'):
-                        card = {
-                            "game": row.get('game', ''),
-                            "name": row.get('name', ''),
-                            "set": row.get('set', ''),
-                            "link": row.get('link', ''),
-                            "image_url": row.get('image_url', ''),
-                            "price_usd": float(row.get('price_usd', 0)) if row.get('price_usd') else 0,
-                            "price_usd_foil": float(row.get('price_usd_foil', 0)) if row.get('price_usd_foil') else 0,
-                            "price_usd_etched": float(row.get('price_usd_etched', 0)) if row.get('price_usd_etched') else 0,
-                            "quantity": int(row.get('quantity', 1)) if row.get('quantity') else 1,
-                            "variant": row.get('variant', ''),
-                            "date_added": row.get('timestamp', ''),
-                            "card_number": row.get('card_number', ''),
-                            "year": row.get('year', ''),
-                            "paid": float(str(row.get('paid','')).replace('$','').replace(',','')) if str(row.get('paid','')).strip() else 0.0,
-                            "source": "CSV Collection"
-                        }
-                        # Normalize fields
-                        card.setdefault("team", "")
-                        card.setdefault("position", "")
-                        # Avoid duplicate exact records
-                        key = (card["game"], card["name"], card["set"], card["variant"], card.get("card_number", ""))
-                        existing_keys = set(
-                            (c.get("game"), c.get("name"), c.get("set"), c.get("variant"), c.get("card_number", ""))
-                            for c in collections
-                        )
-                        if key not in existing_keys:
-                            collections.append(card)
-            print(f"✅ Merged unified collection CSV")
-    except Exception as e:
-        print(f"❌ Error merging unified collection: {e}")
+    # Unified file is deprecated as a stored source; per-game files are sources of truth.
 
     return collections
 
@@ -210,7 +309,13 @@ def load_watchlist_from_csv(filename: str = "watchlist.csv") -> List[Dict]:
     items: List[Dict] = []
     try:
         coll_dir = get_collections_dir()
-        filepath = os.path.join(coll_dir, filename)
+        try:
+            owner_label = st.session_state.get('current_owner_label', st.session_state.get('default_owner_label', 'Default'))
+        except Exception:
+            owner_label = 'Default'
+        owner = _owner_from_folder_label(owner_label)
+        rel = owner_relative_filename(owner, filename)
+        filepath = os.path.join(coll_dir, rel)
         if not os.path.exists(filepath):
             return items
         with open(filepath, 'r', encoding='utf-8') as f:
@@ -262,10 +367,16 @@ def save_collection_to_csv(collection: List[Dict], filename: str):
     """Save collection to CSV file in collections folder"""
     try:
         coll_dir = get_collections_dir()
-        filepath = os.path.join(coll_dir, filename)
+        try:
+            owner_label = st.session_state.get('current_owner_label', st.session_state.get('default_owner_label', 'Default'))
+        except Exception:
+            owner_label = 'Default'
+        owner = _owner_from_folder_label(owner_label)
+        rel = filename if ('/' in filename or filename.startswith('.')) else owner_relative_filename(owner, filename)
+        filepath = os.path.join(coll_dir, rel)
         # Define CSV headers
         headers = [
-            'game', 'name', 'set', 'card_number', 'year', 'link', 'image_url', 'price_low', 'price_mid', 'price_market',
+            'game', 'name', 'set', 'set_code', 'card_number', 'year', 'link', 'image_url', 'price_low', 'price_mid', 'price_market',
             'price_usd', 'price_usd_foil', 'price_usd_etched', 'quantity', 'variant', 'total_value', 'paid', 'signed', 'altered', 'notes', 'timestamp'
         ]
         
@@ -289,6 +400,7 @@ def save_collection_to_csv(collection: List[Dict], filename: str):
                     'game': card.get('game', ''),
                     'name': card.get('name', ''),
                     'set': card.get('set', ''),
+                    'set_code': card.get('set_code', ''),
                     'card_number': card.get('card_number', ''),
                     'year': card.get('year', ''),
                     'link': card.get('link', ''),
@@ -320,7 +432,13 @@ def save_watchlist_to_csv(watchlist: List[Dict], filename: str = "watchlist.csv"
     """Save watchlist to CSV file in collections folder (same schema as collection)."""
     try:
         coll_dir = get_collections_dir()
-        filepath = os.path.join(coll_dir, filename)
+        try:
+            owner_label = st.session_state.get('current_owner_label', st.session_state.get('default_owner_label', 'Default'))
+        except Exception:
+            owner_label = 'Default'
+        owner = _owner_from_folder_label(owner_label)
+        rel = owner_relative_filename(owner, filename)
+        filepath = os.path.join(coll_dir, rel)
         headers = [
             'game', 'name', 'set', 'link', 'image_url', 'price_low', 'price_mid', 'price_market',
             'price_usd', 'price_usd_foil', 'price_usd_etched', 'quantity', 'variant', 'target_price', 'signed', 'altered', 'notes', 'timestamp'
@@ -407,6 +525,15 @@ def initialize_session_state():
         # keep a copy of full API config in session
         st.session_state["api_config"] = api_cfg
 
+    # Load owner preferences (default owner) from disk, if any
+    owner_prefs = load_owner_prefs()
+    if isinstance(owner_prefs, dict):
+        def_owner = owner_prefs.get('default_owner_label')
+        if def_owner:
+            defaults['default_owner_label'] = def_owner
+        if isinstance(owner_prefs.get('active_profiles'), dict):
+            st.session_state['active_profiles'] = owner_prefs.get('active_profiles')
+
     for key, default_value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = default_value
@@ -464,8 +591,11 @@ def render_add_to_collection_button(card_data: Dict, button_key: str, quantity_k
                 # Check if card already exists in collection
                 existing_card = None
                 for i, existing in enumerate(collection):
+                    # Prefer set_code when present on either side
+                    ex_set = existing.get("set_code") or existing.get("set")
+                    new_set = card_copy.get("set_code") or card_copy.get("set")
                     if (existing.get("name") == card_copy.get("name") and 
-                        existing.get("set") == card_copy.get("set") and
+                        ex_set == new_set and
                         existing.get("card_number") == card_copy.get("card_number") and
                         existing.get("variety") == card_copy.get("variety")):
                         existing_card = i
@@ -482,9 +612,6 @@ def render_add_to_collection_button(card_data: Dict, button_key: str, quantity_k
                 
                 # Save to session state
                 st.session_state[SESSION_KEYS["collection"]] = collection
-                
-                # Save to CSV files
-                save_collection_to_csv(collection, "unified_collection.csv")
                 
                 # Also save to game-specific CSV files
                 mtg_cards = [c for c in collection if c.get("game") == "Magic: The Gathering"]
@@ -1202,15 +1329,20 @@ def render_collection_view():
     with head_l:
         st.title("💳 My Collection")
         st.caption("Manage your personal card collection")
+        try:
+            _owner_badge = st.session_state.get('current_owner_label') or st.session_state.get('default_owner_label')
+            if _owner_badge:
+                st.caption(f"Owner: {_owner_badge}")
+            _set_badge = _get_active_profile_for_owner_label(_owner_badge) if _owner_badge else 'default'
+            if _set_badge and _set_badge != 'default':
+                st.caption(f"Collection Set: {_set_badge}")
+        except Exception:
+            pass
     
     collection_all = st.session_state.get(SESSION_KEYS["collection"], [])
     if not collection_all:
-        st.info("📝 Your collection is empty. Start searching for cards to add them to your collection!")
-        if st.button("🔍 Start Searching"):
-            for key in [SESSION_KEYS["show_collection_view"], SESSION_KEYS["show_sets_view"], SESSION_KEYS["show_mtg_sets_view"]]:
-                st.session_state[key] = False
-            st.rerun()
-        return
+        st.info("📝 This owner's collection is empty. You can add cards or switch owners from the selector.")
+        st.button("🔍 Start Searching")
     
     with head_r:
         games = ["All", "Magic: The Gathering", "Pokémon", "Baseball Cards"]
@@ -1244,8 +1376,8 @@ def render_collection_view():
     
     st.divider()
     
-    # Primary tabs in order: Collection, Gallery View, Investment, Watchlist
-    tab_coll, tab_gallery, tab_invest, tab_watch = st.tabs(["🗂️ Collection", "🖼️ Gallery View", "📈 Investment", "⭐ Watchlist"])
+    # Primary tabs in order: Collection, Gallery View, Investment, Watchlist, Import/Export, Collection Management
+    tab_coll, tab_gallery, tab_invest, tab_watch, tab_io, tab_manage = st.tabs(["🗂️ Collection", "🖼️ Gallery View", "📈 Investment", "⭐ Watchlist", "⬇️⬆️ Import / Export", "🧭 Collection Management"])
     
     with tab_coll:
         render_collection_tab(collection)
@@ -1255,6 +1387,1135 @@ def render_collection_view():
         render_investment_tab(collection)
     with tab_watch:
         render_watchlist_tab()
+    with tab_io:
+        render_import_export_tab()
+    with tab_manage:
+        render_collection_management_tab()
+
+def _sanitize_owner_id(name: str) -> str:
+    import re as _re
+    return _re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-")
+
+def _owner_folder_label(name: str) -> str:
+    base = (name or "").strip()
+    if not base:
+        return ""
+    # Simple possessive label (e.g., John -> Johns Collection)
+    return f"{base}" + ("'" if base.endswith("s") else "s") + " Collection"
+
+def _owner_from_folder_label(label: str) -> str:
+    """Derive owner name from folder label like 'Johns Collection' or "Chris' Collection"."""
+    lab = (label or '').strip()
+    if not lab or lab.lower() == 'default':
+        return ''
+    if lab.endswith(' Collection'):
+        base = lab[:-len(' Collection')]
+    else:
+        base = lab
+    if base.endswith("'s"):
+        return base[:-2]
+    if base.endswith('s'):
+        return base[:-1]
+    return base
+
+def render_collection_management_tab():
+    """Owner/secondary collection management. UI only; does not alter load/save behavior."""
+    st.subheader("Manage Owners and Secondary Collections")
+    st.caption("Create owner folders under collections/ to keep separate CSVs per owner. This does not change current save/load behavior yet.")
+
+    coll_dir = get_collections_dir()
+    # Existing owner folders: any subdirectories under collections/
+    existing = []
+    try:
+        for entry in os.listdir(coll_dir):
+            p = os.path.join(coll_dir, entry)
+            if os.path.isdir(p):
+                existing.append(entry)
+    except Exception:
+        pass
+
+    # Default owner selection (must be an existing owner)
+    if existing:
+        try:
+            def_owner = st.session_state.get('default_owner_label')
+        except Exception:
+            def_owner = None
+        try:
+            def_idx = existing.index(def_owner) if def_owner in existing else 0
+        except Exception:
+            def_idx = 0
+        prev_default = st.session_state.get('_prev_default_owner')
+        new_default = st.selectbox(
+            "Default Owner",
+            existing,
+            index=def_idx,
+            key='default_owner_label',
+            help="Owner used by default on app load"
+        )
+        # Immediate feedback when default owner changes
+        if new_default != prev_default:
+            st.session_state['_prev_default_owner'] = new_default
+            st.success(f"Default owner set to {new_default}")
+        # Optional explicit save button for reassurance (no additional persistence layer yet)
+        if st.button("Save Default Owner", key="btn_save_default_owner"):
+            ok = save_owner_prefs({'default_owner_label': st.session_state.get('default_owner_label')})
+            if ok:
+                st.success(f"Default owner saved: {st.session_state.get('default_owner_label')}")
+            else:
+                st.error("Could not save default owner to disk.")
+    else:
+        st.info("Set a Default Owner after creating at least one owner.")
+
+    if existing:
+        st.write("Existing owner folders:")
+        st.write("\n".join(f"- {e}" for e in sorted(existing)))
+    else:
+        st.info("No owner folders found yet.")
+
+    st.divider()
+    st.write("Add a new owner")
+    col_a, col_b = st.columns([2,1])
+    with col_a:
+        owner_name = st.text_input("Owner name", placeholder="e.g., John", key="owner_new_name")
+    with col_b:
+        if st.button("➕ Add Owner", key="btn_add_owner"):
+            name = (owner_name or "").strip()
+            if not name:
+                st.warning("Please enter an owner name.")
+            else:
+                folder_label = _owner_folder_label(name)
+                folder_path = os.path.join(coll_dir, folder_label)
+                try:
+                    os.makedirs(folder_path, exist_ok=True)
+                    st.success(f"Created folder: {folder_label}")
+                except Exception as e:
+                    st.error(f"Could not create folder: {e}")
+                # Create blank CSV files for this owner (headers only)
+                owner_id = _sanitize_owner_id(name)
+                rel_mtg = os.path.join(folder_label, f"{owner_id}-mtg_collection.csv")
+                rel_pkmn = os.path.join(folder_label, f"{owner_id}-pokemon_collection.csv")
+                rel_uni = os.path.join(folder_label, f"{owner_id}-unified_collection.csv")
+                rel_wl = os.path.join(folder_label, f"{owner_id}-watchlist.csv")
+                try:
+                    save_collection_to_csv([], rel_uni)
+                    save_collection_to_csv([], rel_mtg)
+                    save_collection_to_csv([], rel_pkmn)
+                    save_watchlist_to_csv([], rel_wl)
+                except Exception:
+                    pass
+                # Show created/expected file naming convention
+                st.caption("Owner CSVs initialized (blank):")
+                st.code("\n".join([
+                    os.path.join(folder_path, f"{owner_id}-mtg_collection.csv"),
+                    os.path.join(folder_path, f"{owner_id}-pokemon_collection.csv"),
+                    os.path.join(folder_path, f"{owner_id}-unified_collection.csv"),
+                    os.path.join(folder_path, f"{owner_id}-watchlist.csv"),
+                ]))
+
+    st.divider()
+    # Manage collection sets (profiles) per owner
+    st.subheader("Collection Sets (per owner)")
+    if existing:
+        manage_owner = st.selectbox("Owner to manage", existing, index=0, key="manage_owner_for_profiles")
+        # Detect existing profiles by scanning unified files {oid}-*-unified_collection.csv
+        coll_dir = get_collections_dir()
+        raw_owner = _owner_from_folder_label(manage_owner)
+        oid = _sanitize_owner_id(raw_owner)
+        profiles = set()
+        try:
+            for fn in os.listdir(os.path.join(coll_dir, manage_owner)):
+                if fn.startswith(f"{oid}-") and fn.endswith("-unified_collection.csv"):
+                    middle = fn[len(oid)+1: -len("-unified_collection.csv")]
+                    if middle:
+                        profiles.add(middle)
+                if fn == f"{oid}-unified_collection.csv":
+                    profiles.add('default')
+        except Exception:
+            pass
+        if not profiles:
+            profiles = {'default'}
+        current_profile = _get_active_profile_for_owner_label(manage_owner)
+        try:
+            prof_index = list(sorted(profiles)).index(current_profile) if current_profile in profiles else 0
+        except Exception:
+            prof_index = 0
+        new_profile = st.text_input("New collection set name", placeholder="e.g., trades, sealed, extras", key="new_profile_name")
+        c1, c2 = st.columns([1,1])
+        with c1:
+            if st.button("➕ Add Collection Set", key="btn_add_profile"):
+                pname = _sanitize_profile_id(new_profile)
+                if not pname or pname == 'default':
+                    st.warning("Please provide a non-default set name.")
+                else:
+                    # Create blank CSVs for this profile
+                    rel_mtg = os.path.join(manage_owner, f"{oid}-{pname}-mtg_collection.csv")
+                    rel_pkmn = os.path.join(manage_owner, f"{oid}-{pname}-pokemon_collection.csv")
+                    rel_uni = os.path.join(manage_owner, f"{oid}-{pname}-unified_collection.csv")
+                    rel_wl = os.path.join(manage_owner, f"{oid}-{pname}-watchlist.csv")
+                    try:
+                        save_collection_to_csv([], rel_uni)
+                        save_collection_to_csv([], rel_mtg)
+                        save_collection_to_csv([], rel_pkmn)
+                        save_watchlist_to_csv([], rel_wl)
+                        st.success(f"Created collection set '{pname}' for {manage_owner}")
+                    except Exception as e:
+                        st.error(f"Failed to create set: {e}")
+        with c2:
+            sel_profile = st.selectbox("Active collection set", list(sorted(profiles)), index=prof_index, key="active_profile_select")
+            if st.button("Set Active", key="btn_set_active_profile"):
+                _set_active_profile_for_owner_label(manage_owner, _sanitize_profile_id(sel_profile))
+                st.success(f"Active set for {manage_owner} is now '{_sanitize_profile_id(sel_profile)}'")
+                # If current owner equals this manage_owner, reload and rerun
+                if st.session_state.get('current_owner_label') == manage_owner:
+                    st.session_state[SESSION_KEYS["collection"]] = load_csv_collections()
+                    st.session_state["watchlist"] = load_watchlist_from_csv()
+                    st.rerun()
+
+    st.divider()
+    # Migration tool: Copy from legacy default CSVs into a chosen owner
+    with st.expander("Copy from legacy Default CSVs to an Owner"):
+        if not existing:
+            st.info("Create an owner first.")
+        else:
+            tgt_owner = st.selectbox("Target Owner", existing, key="migrate_target_owner")
+            if st.button("Copy now", key="btn_copy_legacy"):
+                msg = _copy_legacy_default_to_owner(tgt_owner)
+                if msg.startswith("✅"):
+                    st.success(msg)
+                elif msg.startswith("ℹ️"):
+                    st.info(msg)
+                else:
+                    st.error(msg)
+
+def render_help_view():
+    """Help hub with tabbed guidance for core app areas."""
+    st.title("❓ Help")
+    st.caption("Quick guides and tips for using Collectibles Manager")
+    tabs = st.tabs([
+        "📌 Overview",
+        "👤 Owners & Sets",
+        "⬇️⬆️ Import/Export",
+        "🗂️ Collection",
+        "⭐ Watchlist",
+        "⚙️ Settings",
+        "🧰 Troubleshooting"
+    ])
+    with tabs[0]:
+        st.subheader("Overview")
+        st.markdown("""
+        - Use the sidebar to pick an `Owner` and a `Collection Set`. All actions read/write to that context.
+        - Home lets you search and add cards to your active collection.
+        - My Collection shows your data with filters, totals, and actions.
+        - Import/Export supports CSV and a one-click ZIP export.
+        - Collection Management: create owners, set default, migrate legacy, manage sets, delete owners.
+        """)
+    with tabs[1]:
+        st.subheader("Owners & Collection Sets")
+        st.markdown("""
+        - `Owner` lives in the sidebar and applies globally.
+        - Each owner can have multiple `Collection Sets` (e.g., default, trades, sealed).
+        - Switch sets from the sidebar or manage them in `Collection Management`.
+        - Files are saved as `{ownerid}-{[set-]}<type>.csv` under the owner's folder.
+        """)
+    with tabs[2]:
+        st.subheader("Import / Export")
+        st.markdown("""
+        - Export: download MTG/Pokémon/Watchlist CSVs and a virtual Unified CSV (combined), or all as ZIP.
+        - Import: upload CSV and choose `Target` (MTG, Pokémon, or Watchlist) and `Mode` (Replace/Append).
+        - Duplicate handling per import: `Use Settings`, `Force Merge`, or `Force Separate`.
+        - Merge keys:
+          - Collection: (game, name, set_code-or-set, card_number, variant)
+          - Watchlist: (game, name, set, variant)
+        - On merge, `quantity` is summed. For collections, `paid` is summed.
+        - Templates section provides empty CSV headers.
+        """)
+        st.markdown("**Required fields for import (recommended minimum):**")
+        st.markdown("- Card Name\n- Set Code or Set Name\n- Quantity")
+        st.divider()
+        st.markdown("**Download import templates:**")
+        import io as _io
+        def _tmpl_bytes(headers):
+            s = _io.StringIO()
+            w = csv.DictWriter(s, fieldnames=headers)
+            w.writeheader()
+            return s.getvalue().encode('utf-8')
+        # Targeted import templates only
+        mtg_import_headers = ['name','set','set_code','card_number','quantity','foil','paid','signed','altered','notes']
+        pkmn_import_headers = ['name','set','card_number','quantity','paid','signed','altered','notes']
+        wl_import_headers = ['name','set','quantity','target_price','notes']
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.download_button("MTG Import Template", data=_tmpl_bytes(mtg_import_headers), file_name="mtg_import_template.csv", mime="text/csv")
+        with c2:
+            st.download_button("Pokémon Import Template", data=_tmpl_bytes(pkmn_import_headers), file_name="pokemon_import_template.csv", mime="text/csv")
+        with c3:
+            st.download_button("Watchlist Import Template", data=_tmpl_bytes(wl_import_headers), file_name="watchlist_import_template.csv", mime="text/csv")
+    with tabs[3]:
+        st.subheader("Collection")
+        st.markdown("""
+        - Filter by game scope using the header selector.
+        - Add cards from search (Home) using `Add to Collection`.
+        - Edit notes, quantities, and see totals. Empty collections still allow switching owners/sets.
+        """)
+    with tabs[4]:
+        st.subheader("Watchlist")
+        st.markdown("""
+        - Track cards of interest with optional `target_price`.
+        - Import/Export watchlist just like collections. On merge, quantities add up.
+        """)
+    with tabs[5]:
+        st.subheader("Settings")
+        st.markdown("""
+        - Configure data sources (eBay, Scryfall, Pokémon TCG, etc.).
+        - Set `Duplicate Handling` (Merge or Separate) used by default on Append.
+        """)
+    with tabs[6]:
+        st.subheader("Troubleshooting")
+        st.markdown("""
+        - If switching owner/set doesn't reflect, try switching again; the app auto-reloads relevant CSVs.
+        - For import errors, verify CSV headers via the Templates and ensure UTF-8 encoding.
+        - Default owner and active sets are stored under `collections/owner_settings.json`.
+        - You can enable `🐛 Debug Mode` in the sidebar to see extra diagnostics.
+        """)
+
+def render_import_export_tab():
+    """Import/Export data for the active owner (unified/mtg/pokemon/watchlist)."""
+    # Import first
+    owner_label = st.session_state.get('current_owner_label') or st.session_state.get('default_owner_label')
+    st.caption(f"Active owner: {owner_label or '—'}")
+    st.subheader("Import")
+    st.caption("Upload a CSV to replace or append to the active owner's data")
+    # Show last import summary after reruns
+    if st.session_state.get('last_import_summary'):
+        st.info(st.session_state.get('last_import_summary'))
+    up = st.file_uploader("Choose a CSV file", type=["csv"], key="import_csv_top")
+    # Persist uploaded file bytes to survive reruns triggered by button clicks
+    if up is not None:
+        try:
+            st.session_state['import_csv_bytes'] = up.getvalue()
+            st.session_state['import_csv_name'] = getattr(up, 'name', 'upload.csv')
+        except Exception:
+            try:
+                up.seek(0)
+                st.session_state['import_csv_bytes'] = up.read()
+                st.session_state['import_csv_name'] = 'upload.csv'
+            except Exception:
+                st.session_state['import_csv_bytes'] = None
+    target = st.selectbox("Target", ["MTG Collection","Pokémon Collection","Watchlist"], index=0, key="import_target_top")
+    mode = st.radio("Mode", ["Replace","Append"], index=1, horizontal=True, key="import_mode_top")
+    enrich_scry = st.checkbox("Get values and details from Scryfall (MTG only)", value=True, key="import_enrich_scryfall")
+    dup_mode = st.radio(
+        "Duplicate handling (this import only)",
+        ["Use Settings","Force Merge","Force Separate"],
+        index=0,
+        horizontal=True,
+        key="import_dup_mode_top"
+    )
+    btn_import = st.button("Import", key="btn_import_csv_top")
+    if btn_import and not (up or st.session_state.get('import_csv_bytes')):
+        st.warning("Please choose a CSV file before importing.")
+    if btn_import and (up or st.session_state.get('import_csv_bytes')):
+        try:
+            try:
+                st.toast("Starting import...", icon="📥")
+            except Exception:
+                pass
+            with st.spinner("Importing CSV..."):
+                raw = st.session_state.get('import_csv_bytes')
+                if raw is None and up is not None:
+                    try:
+                        up.seek(0)
+                        raw = up.read()
+                    except Exception:
+                        raw = None
+                if not raw:
+                    st.error("Could not read the uploaded file. Please try uploading again.")
+                    return
+                try:
+                    content = raw.decode('utf-8')
+                except Exception:
+                    try:
+                        content = raw.decode('latin-1')
+                    except Exception:
+                        content = raw.decode(errors='ignore')
+            import io as _io
+            # Debug print to terminal
+            try:
+                print(f"📥 Import clicked • target={target} mode={mode} bytes={len(content)}")
+            except Exception:
+                pass
+            r = csv.DictReader(_io.StringIO(content))
+            rows = [dict(x) for x in r]
+            if not rows:
+                st.warning("No rows detected in the uploaded CSV. Please check the file and try again.")
+                return
+            if st.session_state.get(SESSION_KEYS.get("debug_mode", "debug_mode"), False):
+                st.info(f"Parsed {len(rows)} row(s) from CSV. Columns: {list(rows[0].keys()) if rows else []}")
+            # Normalize helpers
+            def nfloat(v, dv=0.0):
+                try:
+                    return float(v)
+                except Exception:
+                    try:
+                        return float(str(v).replace('$','').replace(',',''))
+                    except Exception:
+                        return dv
+            def nint(v, dv=0):
+                try:
+                    return int(v)
+                except Exception:
+                    return dv
+
+            # Resolve effective merge behavior for this import
+            settings_merge = (st.session_state.get('duplicate_strategy') == 'merge')
+            do_merge = (dup_mode == "Force Merge") or (dup_mode == "Use Settings" and settings_merge)
+
+            if target in ("MTG Collection","Pokémon Collection"):
+                coll = [] if mode == "Replace" else load_csv_collections()
+                incoming = []
+                target_game = 'Magic: The Gathering' if target == 'MTG Collection' else 'Pokémon'
+                for row in rows:
+                    # Force game to selected target to ensure correct filtering
+                    row_game = target_game
+                    incoming.append({
+                        'game': row_game,
+                        'name': row.get('name',''),
+                        'set': row.get('set','') or row.get('set_code',''),
+                        'set_code': (row.get('set_code','') or '').lower(),
+                        'card_number': row.get('card_number','') or row.get('collector_number',''),
+                        'year': row.get('year',''),
+                        'link': row.get('link',''),
+                        'image_url': row.get('image_url',''),
+                        'price_usd': nfloat(row.get('price_usd',0)),
+                        'price_usd_foil': nfloat(row.get('price_usd_foil',0)),
+                        'price_usd_etched': nfloat(row.get('price_usd_etched',0)),
+                        'quantity': nint(row.get('quantity',1),1),
+                        'variant': row.get('variant',''),
+                        'paid': nfloat(row.get('paid',0.0)),
+                        'signed': row.get('signed',''),
+                        'altered': row.get('altered',''),
+                        'notes': row.get('notes',''),
+                        'date_added': row.get('timestamp','') or row.get('date_added','')
+                    })
+
+                # Optional enrichment via Scryfall for MTG rows
+                if target == "MTG Collection" and enrich_scry and st.session_state.get("scryfall_enabled", True):
+                    enriched = 0
+                    # Progress bar for enrichment
+                    total_mtg = max(1, sum(1 for _r in incoming if _r.get('game') == 'Magic: The Gathering'))
+                    prog = st.progress(0, text="Contacting Scryfall…")
+                    with st.spinner("Fetching MTG details from Scryfall..."):
+                        for idx, r in enumerate(incoming):
+                            if r.get('game') != 'Magic: The Gathering':
+                                continue
+                            q_name = (r.get('name') or '').strip()
+                            set_hint = (r.get('set') or '').strip()
+                            scode = (r.get('set_code') or '').strip().lower()
+                            # If we have a set code, use Scryfall qualifier s:code for precise matches
+                            if scode:
+                                set_hint_query = f"s:{scode}"
+                            else:
+                                # if set looks like a short uppercase code, treat it as code
+                                _sh = set_hint.strip()
+                                if _sh and len(_sh) <= 5 and _sh.upper() == _sh:
+                                    set_hint_query = f"s:{_sh.lower()}"
+                                else:
+                                    set_hint_query = set_hint
+                            collector_number = str(r.get('card_number') or '').strip()
+                            if not q_name:
+                                # update progress even if skipped
+                                try:
+                                    prog.progress(min((idx+1)/total_mtg, 1.0))
+                                except Exception:
+                                    pass
+                                continue
+                            try:
+                                # Attempt 1: use set hint/query if available
+                                cards_sf, total_sf, _, _ = search_mtg_scryfall(q_name, set_hint=set_hint_query, collector_number=collector_number)
+                                if not cards_sf:
+                                    # Attempt 2: retry without set hint
+                                    try:
+                                        print(f"🔁 Scryfall retry without set hint for '{q_name}' (code='{scode}', num='{collector_number}')")
+                                    except Exception:
+                                        pass
+                                    cards_sf, total_sf, _, _ = search_mtg_scryfall(q_name, set_hint="", collector_number=collector_number)
+                                if cards_sf:
+                                    # choose best match: prefer same set_code or set name and same collector_number
+                                    best = None
+                                    for c in cards_sf:
+                                        ok = True
+                                        # prefer exact set code when provided
+                                        if scode:
+                                            if (c.get('set_code') or '').lower() != scode:
+                                                ok = False
+                                        elif set_hint:
+                                            if c.get('set') != set_hint and (c.get('set_code') or '').lower() != (set_hint or '').lower():
+                                                ok = False
+                                        if collector_number and str(c.get('card_number','')).strip() != collector_number:
+                                            # still allow if not provided or mismatch, but lower priority
+                                            pass
+                                        if ok:
+                                            best = c
+                                            break
+                                    if not best:
+                                        best = cards_sf[0]
+                                    # Fetch full raw Scryfall object for fallback writing
+                                    raw_best = None
+                                    try:
+                                        import requests as _req
+                                        # Build raw API query mirroring search with precise qualifiers
+                                        qparts = [q_name]
+                                        if scode:
+                                            qparts.append(f"s:{scode}")
+                                        if collector_number:
+                                            qparts.append(f"cn:{collector_number}")
+                                        q = " ".join(qparts)
+                                        resp = _req.get("https://api.scryfall.com/cards/search", params={"q": q, "order": "released", "unique": "prints"}, timeout=30)
+                                        if resp.status_code != 404:
+                                            resp.raise_for_status()
+                                            data_raw = resp.json()
+                                            items_raw = data_raw.get("data", [])
+                                            # choose best from raw
+                                            for cr in items_raw:
+                                                if scode and (cr.get('set','').lower() != scode):
+                                                    continue
+                                                if collector_number and str(cr.get('collector_number','')).strip() != collector_number:
+                                                    continue
+                                                raw_best = cr
+                                                break
+                                            if not raw_best and items_raw:
+                                                raw_best = items_raw[0]
+                                    except Exception as _er:
+                                        try:
+                                            print(f"⚠️ Scryfall raw fetch failed: {_er}")
+                                        except Exception:
+                                            pass
+                                    # debug first few
+                                    try:
+                                        if idx < 3:
+                                            print(f"✨ Enriched '{q_name}' -> set={best.get('set')} code={best.get('set_code')} cn={best.get('card_number')}")
+                                    except Exception:
+                                        pass
+                                    # apply fields (overwrite to ensure enrichment is captured)
+                                    src_obj = raw_best or best
+                                    r['set'] = (src_obj.get('set_name') if raw_best else best.get('set')) or r.get('set') or ''
+                                    try:
+                                        r['set_code'] = ((src_obj.get('set') if raw_best else best.get('set_code')) or r.get('set_code','') or '').lower()
+                                    except Exception:
+                                        r['set_code'] = (src_obj.get('set') if raw_best else best.get('set_code')) or r.get('set_code','')
+                                    # derive year from raw release date if available
+                                    if raw_best and src_obj.get('released_at'):
+                                        import re as _re
+                                        m4 = _re.search(r"(19\d{2}|20\d{2})", str(src_obj.get('released_at')))
+                                        r['year'] = (m4.group(1) if m4 else r.get('year') or '')
+                                    else:
+                                        r['year'] = best.get('year') or r.get('year') or ''
+                                    # prefer raw image_uris.normal if available
+                                    if raw_best and (src_obj.get('image_uris') or {}):
+                                        r['image_url'] = (src_obj.get('image_uris') or {}).get('normal') or r.get('image_url') or ''
+                                    else:
+                                        r['image_url'] = best.get('image_url') or r.get('image_url') or ''
+                                    r['link'] = (src_obj.get('scryfall_uri') if raw_best else best.get('link')) or r.get('link') or ''
+                                    # overwrite prices with Scryfall values when present
+                                    if raw_best and src_obj.get('prices'):
+                                        pr = src_obj.get('prices') or {}
+                                        r['price_usd'] = pr.get('usd') or r.get('price_usd', 0.0)
+                                        r['price_usd_foil'] = pr.get('usd_foil') or r.get('price_usd_foil', 0.0)
+                                        r['price_usd_etched'] = pr.get('usd_etched') or r.get('price_usd_etched', 0.0)
+                                    else:
+                                        r['price_usd'] = best.get('price_usd', r.get('price_usd', 0.0))
+                                        r['price_usd_foil'] = best.get('price_usd_foil', r.get('price_usd_foil', 0.0))
+                                        r['price_usd_etched'] = best.get('price_usd_etched', r.get('price_usd_etched', 0.0))
+                                    # persist to fallback for offline use
+                                    try:
+                                        if raw_best:
+                                            store_mtg_card(raw_best)
+                                        else:
+                                            store_mtg_card(best)
+                                    except Exception as _e:
+                                        try:
+                                            print(f"⚠️ fallback store_mtg_card failed: {_e}")
+                                        except Exception:
+                                            pass
+                                    enriched += 1
+                            except Exception:
+                                continue
+                            finally:
+                                try:
+                                    prog.progress(min((idx+1)/total_mtg, 1.0))
+                                except Exception:
+                                    pass
+                    if enriched == 0:
+                        st.warning("No rows were enriched from Scryfall. Check names/set codes/collector numbers.")
+                    else:
+                        try:
+                            st.toast(f"Scryfall enrichment applied to {enriched} row(s).", icon="🧙")
+                        except Exception:
+                            pass
+                # Merge behavior on Append
+                if mode == "Append" and do_merge:
+                    # key: (game, name, set_or_code, card_number, variant)
+                    def _k(c):
+                        kset = c.get('set_code') or c.get('set','')
+                        return (c.get('game',''), c.get('name',''), kset, c.get('card_number',''), c.get('variant',''))
+                    acc = {}
+                    # seed with existing
+                    for c in coll:
+                        acc[_k(c)] = dict(c)
+                    # fold incoming
+                    for c in incoming:
+                        k = _k(c)
+                        if k in acc:
+                            # sum quantities
+                            try:
+                                acc[k]['quantity'] = int(acc[k].get('quantity',1) or 1) + int(c.get('quantity',1) or 1)
+                            except Exception:
+                                pass
+                            # paid handling (sum)
+                            try:
+                                acc[k]['paid'] = float(acc[k].get('paid',0.0) or 0.0) + float(c.get('paid',0.0) or 0.0)
+                            except Exception:
+                                pass
+                            # propagate enriched fields (prefer incoming if provided)
+                            overwrite_fields = ['set','set_code','year','link','image_url']
+                            for f in overwrite_fields:
+                                if c.get(f):
+                                    acc[k][f] = c.get(f)
+                            # for numeric prices: prefer incoming if > 0
+                            for f in ['price_usd','price_usd_foil','price_usd_etched']:
+                                try:
+                                    if float(c.get(f) or 0) > 0:
+                                        acc[k][f] = c.get(f)
+                                except Exception:
+                                    pass
+                            # update date_added to latest
+                            if c.get('date_added'):
+                                acc[k]['date_added'] = c.get('date_added')
+                        else:
+                            acc[k] = dict(c)
+                    merged = list(acc.values())
+                else:
+                    merged = coll + incoming if mode == "Append" else incoming
+                # Filter to specific game based on target
+                if target == "MTG Collection":
+                    merged = [c for c in merged if c.get('game') == 'Magic: The Gathering']
+                    before = len([c for c in coll if c.get('game') == 'Magic: The Gathering']) if mode == "Append" else 0
+                    try:
+                        print(f"📦 Import->MTG: before={before} incoming={len(incoming)} merged={len(merged)} mode={mode} do_merge={do_merge}")
+                    except Exception:
+                        pass
+                    save_collection_to_csv(merged, 'mtg_collection.csv')
+                    try:
+                        st.toast(f"Imported {len(incoming)} row(s) into MTG. New size: {len(merged)} (was {before}).", icon="✅")
+                    except Exception:
+                        pass
+                    st.session_state['last_import_summary'] = f"✅ MTG import complete: {len(incoming)} row(s). New size {len(merged)} (was {before})."
+                elif target == "Pokémon Collection":
+                    merged = [c for c in merged if c.get('game') == 'Pokémon']
+                    before = len([c for c in coll if c.get('game') == 'Pokémon']) if mode == "Append" else 0
+                    try:
+                        print(f"📦 Import->Pokemon: before={before} incoming={len(incoming)} merged={len(merged)} mode={mode} do_merge={do_merge}")
+                    except Exception:
+                        pass
+                    save_collection_to_csv(merged, 'pokemon_collection.csv')
+                    try:
+                        st.toast(f"Imported {len(incoming)} row(s) into Pokémon. New size: {len(merged)} (was {before}).", icon="✅")
+                    except Exception:
+                        pass
+                    st.session_state['last_import_summary'] = f"✅ Pokémon import complete: {len(incoming)} row(s). New size {len(merged)} (was {before})."
+                # Update session
+                st.session_state[SESSION_KEYS['collection']] = load_csv_collections()
+                st.rerun()
+            else:
+                # Watchlist
+                wl = [] if mode == "Replace" else load_watchlist_from_csv()
+                incoming = []
+                for row in rows:
+                    incoming.append({
+                        'game': row.get('game',''),
+                        'name': row.get('name',''),
+                        'set': row.get('set','') or row.get('set_code',''),
+                        'link': row.get('link',''),
+                        'image_url': row.get('image_url',''),
+                        'price_usd': nfloat(row.get('price_usd',0)),
+                        'price_usd_foil': nfloat(row.get('price_usd_foil',0)),
+                        'price_usd_etched': nfloat(row.get('price_usd_etched',0)),
+                        'quantity': nint(row.get('quantity',1),1),
+                        'variant': row.get('variant',''),
+                        'target_price': nfloat(row.get('target_price',0.0)),
+                        'signed': row.get('signed',''),
+                        'altered': row.get('altered',''),
+                        'notes': row.get('notes',''),
+                        'date_added': row.get('timestamp','') or row.get('date_added','')
+                    })
+                if mode == "Append" and do_merge:
+                    def _k(c):
+                        kset = c.get('set_code') or c.get('set','')
+                        return (c.get('game',''), c.get('name',''), kset, c.get('variant',''))
+                    acc = {}
+                    for c in wl:
+                        acc[_k(c)] = dict(c)
+                    for c in incoming:
+                        k = _k(c)
+                        if k in acc:
+                            # For watchlist, sum quantity only; keep target_price as-is unless incoming provides one
+                            try:
+                                acc[k]['quantity'] = int(acc[k].get('quantity',1) or 1) + int(c.get('quantity',1) or 1)
+                            except Exception:
+                                pass
+                            if c.get('target_price'):
+                                acc[k]['target_price'] = c.get('target_price')
+                            for f in ['price_usd','price_usd_foil','price_usd_etched','link','image_url','date_added']:
+                                if not acc[k].get(f) and c.get(f):
+                                    acc[k][f] = c.get(f)
+                        else:
+                            acc[k] = dict(c)
+                    merged = list(acc.values())
+                else:
+                    merged = wl + incoming if mode == "Append" else incoming
+                save_watchlist_to_csv(merged, 'watchlist.csv')
+                st.session_state['watchlist'] = load_watchlist_from_csv()
+                try:
+                    st.toast(f"Imported {len(incoming)} watchlist row(s). New size: {len(merged)}.", icon="✅")
+                except Exception:
+                    pass
+                st.session_state['last_import_summary'] = f"✅ Watchlist import complete: {len(incoming)} row(s). New size {len(merged)}."
+                st.rerun()
+        except Exception as e:
+            st.error(f"Import failed: {e}")
+
+    st.divider()
+    st.subheader("Export")
+
+    # Prepare current data
+    try:
+        coll_all = load_csv_collections()  # owner-aware
+    except Exception:
+        coll_all = []
+    try:
+        wl_all = load_watchlist_from_csv()
+    except Exception:
+        wl_all = []
+
+    # Split by game
+    mtg_only = [c for c in coll_all if c.get('game') == 'Magic: The Gathering']
+    pkmn_only = [c for c in coll_all if c.get('game') == 'Pokémon']
+
+    def _csv_bytes_for_collection(rows: List[Dict]) -> bytes:
+        import io as _io
+        buf = _io.StringIO()
+        headers = [
+            'game', 'name', 'set', 'set_code', 'card_number', 'year', 'link', 'image_url',
+            'price_low', 'price_mid', 'price_market',
+            'price_usd', 'price_usd_foil', 'price_usd_etched',
+            'quantity', 'variant', 'total_value', 'paid', 'signed', 'altered', 'notes', 'timestamp'
+        ]
+        w = csv.DictWriter(buf, fieldnames=headers)
+        w.writeheader()
+        for c in rows:
+            try:
+                mv = c.get('price_market') if c.get('price_market') is not None else c.get('price_usd', 0)
+            except Exception:
+                mv = c.get('price_usd', 0)
+            try:
+                qty = int(c.get('quantity', 1) or 1)
+            except Exception:
+                qty = 1
+            row = {
+                'game': c.get('game',''), 'name': c.get('name',''), 'set': c.get('set',''),
+                'set_code': c.get('set_code',''),
+                'card_number': c.get('card_number',''), 'year': c.get('year',''),
+                'link': c.get('link',''), 'image_url': c.get('image_url',''),
+                'price_low': '', 'price_mid': '', 'price_market': '',
+                'price_usd': c.get('price_usd',0), 'price_usd_foil': c.get('price_usd_foil',0), 'price_usd_etched': c.get('price_usd_etched',0),
+                'quantity': qty, 'variant': c.get('variant',''),
+                'total_value': (mv or 0) * qty,
+                'paid': c.get('paid',0.0), 'signed': c.get('signed',''), 'altered': c.get('altered',''), 'notes': c.get('notes',''),
+                'timestamp': c.get('date_added','')
+            }
+            w.writerow(row)
+        return buf.getvalue().encode('utf-8')
+
+    def _csv_bytes_for_watchlist(rows: List[Dict]) -> bytes:
+        import io as _io
+        buf = _io.StringIO()
+        headers = [
+            'game','name','set','link','image_url','price_low','price_mid','price_market',
+            'price_usd','price_usd_foil','price_usd_etched','quantity','variant','target_price','signed','altered','notes','timestamp'
+        ]
+        w = csv.DictWriter(buf, fieldnames=headers)
+        w.writeheader()
+        for c in rows:
+            row = {
+                'game': c.get('game',''), 'name': c.get('name',''), 'set': c.get('set',''),
+                'link': c.get('link',''), 'image_url': c.get('image_url',''),
+                'price_low': '', 'price_mid': '', 'price_market': '',
+                'price_usd': c.get('price_usd',0), 'price_usd_foil': c.get('price_usd_foil',0), 'price_usd_etched': c.get('price_usd_etched',0),
+                'quantity': c.get('quantity',1), 'variant': c.get('variant',''),
+                'target_price': c.get('target_price',0.0), 'signed': c.get('signed',''), 'altered': c.get('altered',''), 'notes': c.get('notes',''),
+                'timestamp': c.get('date_added','')
+            }
+            w.writerow(row)
+        return buf.getvalue().encode('utf-8')
+
+    c_unified = _csv_bytes_for_collection(coll_all)
+    c_mtg = _csv_bytes_for_collection(mtg_only)
+    c_pkmn = _csv_bytes_for_collection(pkmn_only)
+    c_wl = _csv_bytes_for_watchlist(wl_all)
+
+    colA, colB, colC, colD = st.columns(4)
+    with colA:
+        st.download_button("Download unified_collection.csv", data=c_unified, file_name="unified_collection.csv", mime="text/csv")
+    with colB:
+        st.download_button("Download mtg_collection.csv", data=c_mtg, file_name="mtg_collection.csv", mime="text/csv")
+    with colC:
+        st.download_button("Download pokemon_collection.csv", data=c_pkmn, file_name="pokemon_collection.csv", mime="text/csv")
+    with colD:
+        st.download_button("Download watchlist.csv", data=c_wl, file_name="watchlist.csv", mime="text/csv")
+
+    # ZIP export (includes a virtual unified CSV built from current data)
+    import io as _io
+    zip_buf = _io.BytesIO()
+    with zipfile.ZipFile(zip_buf, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr('unified_collection.csv', c_unified)
+        zf.writestr('mtg_collection.csv', c_mtg)
+        zf.writestr('pokemon_collection.csv', c_pkmn)
+        zf.writestr('watchlist.csv', c_wl)
+    zip_buf.seek(0)
+    st.download_button("Download all as ZIP", data=zip_buf.getvalue(), file_name="export_all.zip", mime="application/zip")
+
+    st.divider()
+    st.subheader("Templates")
+    st.caption("Download import templates")
+    import io as _io
+    def _tmpl_bytes(headers):
+        s = _io.StringIO()
+        w = csv.DictWriter(s, fieldnames=headers)
+        w.writeheader()
+        return s.getvalue().encode('utf-8')
+    # Dedicated MTG import template (requested headers)
+    mtg_import_headers = ['name','set','set_code','card_number','quantity','foil','paid','signed','altered','notes']
+    # Dedicated Pokémon import template (minimal headers)
+    pkmn_import_headers = ['name','set','card_number','quantity','paid','signed','altered','notes']
+    # Dedicated Watchlist import template (minimal headers)
+    wl_import_headers = ['name','set','quantity','target_price','notes']
+    cI1, cI2, cI3 = st.columns(3)
+    with cI1:
+        st.download_button("Template: mtg_import_template.csv", data=_tmpl_bytes(mtg_import_headers), file_name="mtg_import_template.csv", mime="text/csv")
+    with cI2:
+        st.download_button("Template: pokemon_import_template.csv", data=_tmpl_bytes(pkmn_import_headers), file_name="pokemon_import_template.csv", mime="text/csv")
+    with cI3:
+        st.download_button("Template: watchlist_import_template.csv", data=_tmpl_bytes(wl_import_headers), file_name="watchlist_import_template.csv", mime="text/csv")
+
+    st.divider()
+    # Delete owner with fail-safe options
+    try:
+        existing = list_owner_folders()
+    except Exception:
+        existing = []
+    with st.expander("Delete an owner (with fail-safe options)"):
+        if not existing:
+            st.info("No owners to delete. Create one first.")
+        else:
+            del_owner = st.selectbox("Owner to delete", existing, key="owner_to_delete")
+            action = st.radio(
+                "When deleting, what should we do with their data?",
+                [
+                    "Merge into another owner",
+                    "Download ZIP (do not delete)",
+                    "Permanently delete data"
+                ],
+                key="owner_delete_action"
+            )
+            # Additional inputs depending on action
+            target_owner = None
+            if action == "Merge into another owner":
+                merge_targets = [o for o in existing if o != del_owner]
+                if not merge_targets:
+                    st.warning("No other owners to merge into.")
+                else:
+                    target_owner = st.selectbox("Merge into", merge_targets, key="owner_merge_target")
+
+            # Confirmation
+            confirm = st.checkbox("I understand this action is irreversible.", key="owner_delete_confirm")
+            if st.button("Proceed", key="btn_owner_delete"):
+                if not confirm:
+                    st.warning("Please confirm before proceeding.")
+                else:
+                    if action == "Download ZIP (do not delete)":
+                        buf = _zip_owner_folder_to_memory(del_owner)
+                        if buf:
+                            st.download_button(
+                                label=f"Download {del_owner}.zip",
+                                data=buf.getvalue(),
+                                file_name=f"{del_owner}.zip",
+                                mime="application/zip",
+                                key="btn_download_owner_zip"
+                            )
+                            st.info("Downloaded archive is prepared below. No deletion has occurred.")
+                        else:
+                            st.error("Failed to create ZIP archive.")
+                    elif action == "Merge into another owner":
+                        if not target_owner:
+                            st.error("Please choose a target owner to merge into.")
+                        else:
+                            msg = _merge_owner_into(del_owner, target_owner)
+                            if msg.startswith("✅"):
+                                # After successful merge, delete source owner folder
+                                _delete_owner_folder(del_owner)
+                                st.success(msg + f" Source '{del_owner}' deleted.")
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                    elif action == "Permanently delete data":
+                        ok = _delete_owner_folder(del_owner)
+                        if ok:
+                            st.success(f"Deleted owner '{del_owner}' and all associated files.")
+                            st.rerun()
+                        else:
+                            st.error("Failed to delete owner folder.")
+
+def _owner_folder_path(label: str) -> str:
+    return os.path.join(get_collections_dir(), label)
+
+def _zip_owner_folder_to_memory(owner_label: str) -> io.BytesIO:
+    try:
+        folder = _owner_folder_path(owner_label)
+        if not os.path.isdir(folder):
+            return None
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+            for root, _, files in os.walk(folder):
+                for fn in files:
+                    full = os.path.join(root, fn)
+                    arc = os.path.relpath(full, start=os.path.dirname(folder))
+                    zf.write(full, arc)
+        buf.seek(0)
+        return buf
+    except Exception:
+        return None
+
+def _delete_owner_folder(owner_label: str) -> bool:
+    try:
+        # Don't allow deleting if set as default owner
+        if st.session_state.get('default_owner_label') == owner_label:
+            return False
+        p = _owner_folder_path(owner_label)
+        if os.path.isdir(p):
+            shutil.rmtree(p)
+        return True
+    except Exception:
+        return False
+
+def _merge_owner_into(src_owner_label: str, dst_owner_label: str) -> str:
+    try:
+        # Load source owner files
+        coll_dir = get_collections_dir()
+        def _read_owner_file(owner_label: str, base: str) -> List[Dict]:
+            rel = owner_relative_filename(_owner_from_folder_label(owner_label), base)
+            path = os.path.join(coll_dir, rel)
+            rows: List[Dict] = []
+            try:
+                if os.path.exists(path):
+                    with open(path, 'r', encoding='utf-8') as f:
+                        reader = csv.DictReader(f)
+                        for r in reader:
+                            rows.append(dict(r))
+            except Exception:
+                pass
+            return rows
+
+        uni = _read_owner_file(src_owner_label, 'unified_collection.csv')
+        mtg = _read_owner_file(src_owner_label, 'mtg_collection.csv')
+        pkmn = _read_owner_file(src_owner_label, 'pokemon_collection.csv')
+        wl = _read_owner_file(src_owner_label, 'watchlist.csv')
+
+        # Normalize rows to in-memory schema
+        def _norm_collection(rows: List[Dict]) -> List[Dict]:
+            out: List[Dict] = []
+            for row in rows:
+                try:
+                    out.append({
+                        'game': row.get('game',''),
+                        'name': row.get('name',''),
+                        'set': row.get('set',''),
+                        'card_number': row.get('card_number','') or row.get('collector_number',''),
+                        'year': row.get('year',''),
+                        'link': row.get('link',''),
+                        'image_url': row.get('image_url',''),
+                        'price_usd': float(row.get('price_usd',0) or 0),
+                        'price_usd_foil': float(row.get('price_usd_foil',0) or 0),
+                        'price_usd_etched': float(row.get('price_usd_etched',0) or 0),
+                        'quantity': int(row.get('quantity',1) or 1),
+                        'variant': row.get('variant',''),
+                        'paid': float(row.get('paid',0) or 0),
+                        'signed': row.get('signed',''),
+                        'altered': row.get('altered',''),
+                        'notes': row.get('notes',''),
+                        'date_added': row.get('timestamp','') or row.get('date_added','')
+                    })
+                except Exception:
+                    continue
+            return out
+
+        def _norm_watchlist(rows: List[Dict]) -> List[Dict]:
+            out: List[Dict] = []
+            for row in rows:
+                try:
+                    out.append({
+                        'game': row.get('game',''),
+                        'name': row.get('name',''),
+                        'set': row.get('set',''),
+                        'link': row.get('link',''),
+                        'image_url': row.get('image_url',''),
+                        'price_usd': float(row.get('price_usd',0) or 0),
+                        'price_usd_foil': float(row.get('price_usd_foil',0) or 0),
+                        'price_usd_etched': float(row.get('price_usd_etched',0) or 0),
+                        'quantity': int(row.get('quantity',1) or 1),
+                        'variant': row.get('variant',''),
+                        'target_price': float(row.get('target_price',0) or 0),
+                        'signed': row.get('signed',''),
+                        'altered': row.get('altered',''),
+                        'notes': row.get('notes',''),
+                        'date_added': row.get('timestamp','') or row.get('date_added','')
+                    })
+                except Exception:
+                    continue
+            return out
+
+        # Switch save context to destination owner
+        prev = st.session_state.get('current_owner_label')
+        st.session_state['current_owner_label'] = dst_owner_label
+
+        # Load existing destination data to append to
+        dst_coll = load_csv_collections()
+        dst_wl = load_watchlist_from_csv()
+
+        # Merge: append items and persist
+        merged_uni = (dst_coll or []) + _norm_collection(uni)
+        save_collection_to_csv(merged_uni, 'unified_collection.csv')
+
+        merged_mtg = [c for c in merged_uni if c.get('game') == 'Magic: The Gathering']
+        merged_pkmn = [c for c in merged_uni if c.get('game') == 'Pokémon']
+        if merged_mtg:
+            save_collection_to_csv(merged_mtg, 'mtg_collection.csv')
+        if merged_pkmn:
+            save_collection_to_csv(merged_pkmn, 'pokemon_collection.csv')
+
+        merged_wl = (dst_wl or []) + _norm_watchlist(wl)
+        save_watchlist_to_csv(merged_wl, 'watchlist.csv')
+
+        # restore owner context
+        if prev is not None:
+            st.session_state['current_owner_label'] = prev
+        return f"✅ Merged '{src_owner_label}' into '{dst_owner_label}'"
+    except Exception as e:
+        return f"❌ Merge failed: {e}"
+def _copy_legacy_default_to_owner(owner_label: str) -> str:
+    """Copy data from legacy root CSVs into the specified owner. Returns a status message."""
+    try:
+        coll_dir = get_collections_dir()
+        # Legacy files (root under collections)
+        f_mtg = os.path.join(coll_dir, 'mtg_collection.csv')
+        f_pkmn = os.path.join(coll_dir, 'pokemon_collection.csv')
+        f_uni = os.path.join(coll_dir, 'unified_collection.csv')
+        f_wl = os.path.join(coll_dir, 'watchlist.csv')
+
+        any_found = any(os.path.exists(p) for p in [f_mtg, f_pkmn, f_uni, f_wl])
+        if not any_found:
+            return "ℹ️ No legacy Default CSVs found to copy."
+
+        # Parse legacy into memory (tolerant minimal parser)
+        def _read_csv_rows(path: str) -> List[Dict]:
+            rows: List[Dict] = []
+            try:
+                if os.path.exists(path):
+                    with open(path, 'r', encoding='utf-8') as f:
+                        reader = csv.DictReader(f)
+                        for r in reader:
+                            rows.append(dict(r))
+            except Exception:
+                pass
+            return rows
+
+        uni_rows = _read_csv_rows(f_uni)
+        mtg_rows = _read_csv_rows(f_mtg)
+        pkmn_rows = _read_csv_rows(f_pkmn)
+        wl_rows = _read_csv_rows(f_wl)
+
+        # Switch save context to target owner for save_* helpers
+        prev = st.session_state.get('current_owner_label')
+        st.session_state['current_owner_label'] = owner_label
+
+        # Convert rows to our in-memory schema for collections (best-effort)
+        def _norm_collection(rows: List[Dict]) -> List[Dict]:
+            out: List[Dict] = []
+            for row in rows:
+                try:
+                    out.append({
+                        'game': row.get('game',''),
+                        'name': row.get('name',''),
+                        'set': row.get('set',''),
+                        'card_number': row.get('card_number','') or row.get('collector_number',''),
+                        'year': row.get('year',''),
+                        'link': row.get('link',''),
+                        'image_url': row.get('image_url',''),
+                        'price_usd': float(row.get('price_usd',0) or 0),
+                        'price_usd_foil': float(row.get('price_usd_foil',0) or 0),
+                        'price_usd_etched': float(row.get('price_usd_etched',0) or 0),
+                        'quantity': int(row.get('quantity',1) or 1),
+                        'variant': row.get('variant',''),
+                        'paid': float(row.get('paid',0) or 0),
+                        'signed': row.get('signed',''),
+                        'altered': row.get('altered',''),
+                        'notes': row.get('notes',''),
+                        'date_added': row.get('timestamp','') or row.get('date_added','')
+                    })
+                except Exception:
+                    continue
+            return out
+
+        def _norm_watchlist(rows: List[Dict]) -> List[Dict]:
+            out: List[Dict] = []
+            for row in rows:
+                try:
+                    out.append({
+                        'game': row.get('game',''),
+                        'name': row.get('name',''),
+                        'set': row.get('set',''),
+                        'link': row.get('link',''),
+                        'image_url': row.get('image_url',''),
+                        'price_usd': float(row.get('price_usd',0) or 0),
+                        'price_usd_foil': float(row.get('price_usd_foil',0) or 0),
+                        'price_usd_etched': float(row.get('price_usd_etched',0) or 0),
+                        'quantity': int(row.get('quantity',1) or 1),
+                        'variant': row.get('variant',''),
+                        'target_price': float(row.get('target_price',0) or 0),
+                        'signed': row.get('signed',''),
+                        'altered': row.get('altered',''),
+                        'notes': row.get('notes',''),
+                        'date_added': row.get('timestamp','') or row.get('date_added','')
+                    })
+                except Exception:
+                    continue
+            return out
+
+        # Save under target owner
+        if uni_rows:
+            save_collection_to_csv(_norm_collection(uni_rows), 'unified_collection.csv')
+        if mtg_rows:
+            save_collection_to_csv(_norm_collection(mtg_rows), 'mtg_collection.csv')
+        if pkmn_rows:
+            save_collection_to_csv(_norm_collection(pkmn_rows), 'pokemon_collection.csv')
+        if wl_rows:
+            save_watchlist_to_csv(_norm_watchlist(wl_rows), 'watchlist.csv')
+
+        # restore
+        if prev is not None:
+            st.session_state['current_owner_label'] = prev
+        return f"✅ Copied legacy CSVs to {owner_label}"
+    except Exception as e:
+        return f"❌ Copy failed: {e}"
 
 def render_all_cards_view(collection: List[Dict]):
     """Render all cards in collection with filtering and sorting (collection already scoped by header selector)"""
@@ -2182,7 +3443,16 @@ def render_collection_list(cards: List[Dict]):
                 # Card details
                 st.write(f"**Name:** {card.get('name', 'Unknown')}")
                 st.write(f"**Game:** {card.get('game', 'Unknown')}")
-                st.write(f"**Set:** {card.get('year', '')} {card.get('set', '')}")
+                # Show Set with tooltip for set_code
+                try:
+                    _set_name = f"{card.get('year', '')} {card.get('set', '')}".strip()
+                    _set_code = card.get('set_code', '').strip()
+                    if _set_code:
+                        st.markdown(f"**Set:** {_set_name} <span title='Set code: {_set_code}'>🛈</span>", unsafe_allow_html=True)
+                    else:
+                        st.write(f"**Set:** {_set_name}")
+                except Exception:
+                    st.write(f"**Set:** {card.get('year', '')} {card.get('set', '')}")
                 st.write(f"**Card #:** {card.get('card_number', '')}")
                 st.write(f"**Team:** {card.get('team', '')}")
                 st.write(f"**Position:** {card.get('position', '')}")
@@ -2250,7 +3520,7 @@ def main():
     """Main application function"""
     # Set page configuration
     st.set_page_config(
-        page_title="TCG Price Tracker",
+        page_title="Collectibles Manager",
         page_icon="🃏",
         layout="wide",
         initial_sidebar_state="expanded"
@@ -2258,16 +3528,84 @@ def main():
     
     # Initialize session state
     initialize_session_state()
-    # Ensure debug visuals are off unless explicitly enabled
-    try:
-        st.session_state[SESSION_KEYS["debug_mode"]] = False
-    except Exception:
-        pass
     
     # Sidebar
     with st.sidebar:
-        st.title("🃏 TCG Price Tracker")
+        st.title("🃏 Collectibles Manager")
         st.markdown("---")
+        # Global Owner selector (persists across all pages)
+        owners = list_owner_folders()
+        if owners:
+            try:
+                pref = st.session_state.get('current_owner_label') or st.session_state.get('default_owner_label')
+            except Exception:
+                pref = None
+            try:
+                idx = owners.index(pref) if pref in owners else 0
+            except Exception:
+                idx = 0
+            prev_owner = st.session_state.get('_prev_current_owner_label')
+            sel_owner = st.selectbox("Owner", owners, index=idx, key='current_owner_label')
+            if sel_owner != prev_owner:
+                st.session_state['_prev_current_owner_label'] = sel_owner
+                try:
+                    st.success(f"Owner switched to {sel_owner}")
+                except Exception:
+                    pass
+                # Reload data for selected owner and rerun
+                try:
+                    st.session_state[SESSION_KEYS["collection"]] = load_csv_collections()
+                except Exception:
+                    pass
+                try:
+                    st.session_state["watchlist"] = load_watchlist_from_csv()
+                except Exception:
+                    pass
+                st.rerun()
+            # Active collection set (profile) selector for this owner
+            try:
+                active_profile = _get_active_profile_for_owner_label(sel_owner)
+            except Exception:
+                active_profile = 'default'
+            # Discover existing profiles for this owner by scanning the folder
+            try:
+                coll_dir = get_collections_dir()
+                raw_owner = _owner_from_folder_label(sel_owner)
+                oid = _sanitize_owner_id(raw_owner)
+                profiles = set()
+                for fn in os.listdir(os.path.join(coll_dir, sel_owner)):
+                    if fn.startswith(f"{oid}-") and fn.endswith("-unified_collection.csv"):
+                        middle = fn[len(oid)+1: -len("-unified_collection.csv")]
+                        if middle:
+                            profiles.add(middle)
+                    if fn == f"{oid}-unified_collection.csv":
+                        profiles.add('default')
+                if not profiles:
+                    profiles = {'default'}
+            except Exception:
+                profiles = {'default'}
+            try:
+                pidx = list(sorted(profiles)).index(active_profile) if active_profile in profiles else 0
+            except Exception:
+                pidx = 0
+            sel_profile = st.selectbox("Collection Set", list(sorted(profiles)), index=pidx, key='current_owner_profile_label')
+            if sel_profile != active_profile:
+                _set_active_profile_for_owner_label(sel_owner, _sanitize_profile_id(sel_profile))
+                try:
+                    st.success(f"Active set switched to {sel_profile}")
+                except Exception:
+                    pass
+                try:
+                    st.session_state[SESSION_KEYS["collection"]] = load_csv_collections()
+                except Exception:
+                    pass
+                try:
+                    st.session_state["watchlist"] = load_watchlist_from_csv()
+                except Exception:
+                    pass
+                st.rerun()
+        else:
+            st.info("No owners yet. Create one in Collection Management.")
         
         # Navigation buttons
         st.subheader("📍 Navigation")
@@ -2276,6 +3614,7 @@ def main():
             for key in [SESSION_KEYS["show_collection_view"], SESSION_KEYS["show_sets_view"], SESSION_KEYS["show_mtg_sets_view"]]:
                 st.session_state[key] = False
             st.session_state["show_settings_view"] = False
+            st.session_state["show_help_view"] = False
             st.rerun()
         
         if st.button("💳 My Collection", width='stretch'):
@@ -2284,6 +3623,7 @@ def main():
             st.session_state[SESSION_KEYS["show_sets_view"]] = False
             st.session_state[SESSION_KEYS["show_mtg_sets_view"]] = False
             st.session_state["show_settings_view"] = False
+            st.session_state["show_help_view"] = False
             st.rerun()
         
         if st.button("📚 Card Sets", width='stretch'):
@@ -2292,6 +3632,7 @@ def main():
             st.session_state[SESSION_KEYS["show_sets_view"]] = True
             st.session_state[SESSION_KEYS["show_mtg_sets_view"]] = False
             st.session_state["show_settings_view"] = False
+            st.session_state["show_help_view"] = False
             st.rerun()
         
         if st.button("⚙️ Settings", width='stretch'):
@@ -2300,6 +3641,15 @@ def main():
             st.session_state[SESSION_KEYS["show_sets_view"]] = False
             st.session_state[SESSION_KEYS["show_mtg_sets_view"]] = False
             st.session_state["show_settings_view"] = True
+            st.session_state["show_help_view"] = False
+            st.rerun()
+        if st.button("❓ Help", width='stretch'):
+            # Show help view
+            st.session_state[SESSION_KEYS["show_collection_view"]] = False
+            st.session_state[SESSION_KEYS["show_sets_view"]] = False
+            st.session_state[SESSION_KEYS["show_mtg_sets_view"]] = False
+            st.session_state["show_settings_view"] = False
+            st.session_state["show_help_view"] = True
             st.rerun()
         
         st.markdown("---")
@@ -2414,10 +3764,21 @@ def main():
         st.info("🚧 MTG Sets view coming soon!")
     elif st.session_state.get("show_settings_view", False):
         render_settings_view()
+    elif st.session_state.get("show_help_view", False):
+        render_help_view()
     else:
         # Home view
-        st.title("🃏 TCG Price Tracker")
+        st.title("🃏 Collectibles Manager")
         st.caption("Search Magic: The Gathering, Pokémon, and Baseball card prices")
+        try:
+            _owner_badge = st.session_state.get('current_owner_label') or st.session_state.get('default_owner_label')
+            if _owner_badge:
+                st.caption(f"Owner: {_owner_badge}")
+            _set_badge = _get_active_profile_for_owner_label(_owner_badge) if _owner_badge else 'default'
+            if _set_badge and _set_badge != 'default':
+                st.caption(f"Collection Set: {_set_badge}")
+        except Exception:
+            pass
         # Global banner + probe only when debug mode is enabled
         if st.session_state.get(SESSION_KEYS["debug_mode"], False):
             try:
@@ -2617,7 +3978,7 @@ def main():
                     total_value = sum(card.get("price_usd", 0) for card in collection)
                     st.metric("Total Value", f"${total_value:.2f}")
             else:
-                st.info("👋 Welcome to the TCG Price Tracker! Use the search form above to find cards and build your collection.")
+                st.info("👋 Welcome to the Collectibles Manager! Use the search form above to find cards and build your collection.")
 
 if __name__ == "__main__":
     main()
