@@ -42,6 +42,25 @@ def get_collections_dir() -> str:
         pass
     return coll_dir
 
+def _merge_paid(existing_paid: float, new_paid: float, strategy: str) -> float:
+    """Combine Paid values per strategy: 'sum'|'average'|'ignore'. Defaults to 'sum' for unknown values."""
+    try:
+        ep = float(existing_paid or 0.0)
+    except Exception:
+        ep = 0.0
+    try:
+        np = float(new_paid or 0.0)
+    except Exception:
+        np = 0.0
+    strat = (strategy or 'sum').lower()
+    if strat == 'average':
+        # If there is no existing paid, return new directly; else avg of both
+        return np if ep == 0 else (ep + np) / 2.0
+    if strat == 'ignore':
+        return ep
+    # default: sum
+    return ep + np
+
 # Owner helpers
 def _sanitize_owner_id(name: str) -> str:
     import re as _re
@@ -89,6 +108,31 @@ def save_owner_prefs(prefs: Dict) -> bool:
         return True
     except Exception:
         return False
+
+def _backup_file_with_retention(filepath: str, retention: int = 5) -> None:
+    """Create a timestamped backup next to filepath and keep only newest `retention` backups."""
+    try:
+        if not os.path.exists(filepath):
+            return
+        base, ext = os.path.splitext(filepath)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = f"{base}_backup_{ts}{ext or '.csv'}"
+        try:
+            import shutil as _shutil
+            _shutil.copy2(filepath, backup_path)
+        except Exception:
+            os.rename(filepath, backup_path)
+        import glob as _glob
+        pattern = f"{base}_backup_*{ext or '.csv'}"
+        backups = sorted(_glob.glob(pattern), reverse=True)
+        if retention is not None and retention >= 0 and len(backups) > retention:
+            for old in backups[retention:]:
+                try:
+                    os.remove(old)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 def _sanitize_profile_id(name: str) -> str:
     import re as _re
@@ -381,6 +425,13 @@ def save_collection_to_csv(collection: List[Dict], filename: str):
             'price_usd', 'price_usd_foil', 'price_usd_etched', 'quantity', 'variant', 'total_value', 'paid', 'signed', 'altered', 'notes', 'timestamp'
         ]
         
+        # Optional backup before save
+        try:
+            if st.session_state.get("auto_backup_enabled", False):
+                _backup_file_with_retention(filepath, int(st.session_state.get("backup_retention", 5) or 5))
+        except Exception:
+            pass
+
         with open(filepath, 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=headers)
             writer.writeheader()
@@ -444,6 +495,12 @@ def save_watchlist_to_csv(watchlist: List[Dict], filename: str = "watchlist.csv"
             'game', 'name', 'set', 'link', 'image_url', 'price_low', 'price_mid', 'price_market',
             'price_usd', 'price_usd_foil', 'price_usd_etched', 'quantity', 'variant', 'target_price', 'signed', 'altered', 'notes', 'timestamp'
         ]
+        # Optional backup before save
+        try:
+            if st.session_state.get("auto_backup_enabled", False):
+                _backup_file_with_retention(filepath, int(st.session_state.get("backup_retention", 5) or 5))
+        except Exception:
+            pass
         with open(filepath, 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=headers)
             writer.writeheader()
@@ -514,7 +571,9 @@ def initialize_session_state():
         "watchlist": csv_watchlist,
         # Settings defaults
         "duplicate_strategy": "merge",  # 'merge' or 'separate'
-        "paid_merge_strategy": "sum"    # placeholder for future use: 'sum'|'average'|'ignore'
+        "paid_merge_strategy": "sum",   # 'sum'|'average'|'ignore'
+        "auto_backup_enabled": False,
+        "backup_retention": 5
     }
     
     # Merge in API config defaults if provided
@@ -573,6 +632,17 @@ def load_api_config() -> dict:
         pass
     return {}
 
+def save_api_config(cfg: dict) -> bool:
+    """Persist API configuration to api_config.json. Returns True on success."""
+    try:
+        base_dir = os.path.dirname(__file__)
+        path = os.path.join(base_dir, 'api_config.json')
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(cfg or {}, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
 def render_add_to_collection_button(card_data: Dict, button_key: str, quantity_key: str, variant: Dict = None):
     """Render add to collection button"""
     with st.container():
@@ -603,8 +673,15 @@ def render_add_to_collection_button(card_data: Dict, button_key: str, quantity_k
                         break
                 
                 if existing_card is not None:
-                    # Update existing card quantity
+                    # Update existing card quantity and merge Paid using strategy
                     collection[existing_card]["quantity"] += quantity
+                    try:
+                        strat = st.session_state.get('paid_merge_strategy', 'sum')
+                        old_paid = collection[existing_card].get('paid', 0.0)
+                        new_paid = card_copy.get('paid', 0.0)
+                        collection[existing_card]['paid'] = _merge_paid(old_paid, new_paid, strat)
+                    except Exception:
+                        pass
                     st.success(f"Updated quantity! Now have {collection[existing_card]['quantity']} of this card")
                 else:
                     # Add new card to collection
@@ -858,6 +935,8 @@ def baseball_search_ebay(player_name: str, year: str = "", team: str = "", set_n
 
 def search_mtg_scryfall(card_name: str, set_hint: str = "", collector_number: str = "") -> Tuple[List[Dict], int, int, str]:
     try:
+        # Terminal debug
+        print(f"[DEBUG] Scryfall search start: name='{card_name}', set_hint='{set_hint}', collector_number='{collector_number}'")
         if not st.session_state.get("scryfall_enabled", True):
             return [], 0, 0, "Scryfall Disabled"
         q = card_name.strip()
@@ -865,18 +944,35 @@ def search_mtg_scryfall(card_name: str, set_hint: str = "", collector_number: st
             q = f"{q} {set_hint.strip()}"
         if collector_number and str(collector_number).strip():
             q = f"{q} cn:{str(collector_number).strip()}"
-        params = {
-            "q": q,
-            "order": "released",
-            "unique": "prints"
-        }
         url = "https://api.scryfall.com/cards/search"
-        resp = requests.get(url, params=params, timeout=30)
-        if resp.status_code == 404:
-            return [], 0, 0, "Scryfall"
-        resp.raise_for_status()
-        data = resp.json()
-        items = data.get("data", [])
+        attempts: List[Tuple[str, Dict[str,str]]] = []
+        # Primary: as-typed
+        attempts.append(("primary", {"q": q, "order": "released", "unique": "prints"}))
+        # Fallback 1: fuzzy name match
+        if card_name.strip():
+            attempts.append(("fuzzy", {"q": f"name~\"{card_name.strip()}\"", "order": "released", "unique": "prints"}))
+        # Fallback 2: wildcard suffix on name
+        token = card_name.strip().split(" ")[0] if card_name.strip() else ""
+        if token:
+            attempts.append(("wildcard", {"q": f"name:{token}*", "order": "released", "unique": "prints"}))
+
+        items = []
+        which = "primary"
+        for tag, params in attempts:
+            # Terminal debug each attempt
+            try:
+                print(f"[DEBUG] Scryfall attempt '{tag}' params={params}")
+            except Exception:
+                pass
+            resp = requests.get(url, params=params, timeout=30)
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+            data = resp.json() or {}
+            items = data.get("data", []) or []
+            if items:
+                which = tag
+                break
         cards: List[Dict] = []
         import re as _re
         for c in items:
@@ -934,8 +1030,18 @@ def search_mtg_scryfall(card_name: str, set_hint: str = "", collector_number: st
                     pass
             except Exception:
                 continue
-        return cards, len(cards), len(items), "Scryfall"
+        source_label = "Scryfall" if which == "primary" else f"Scryfall ({which})"
+        # Terminal debug summary
+        try:
+            print(f"[DEBUG] Scryfall search done: which='{which}', results={len(items)}")
+        except Exception:
+            pass
+        return cards, len(cards), len(items), source_label
     except Exception as e:
+        try:
+            print(f"[DEBUG] Scryfall search error: {e}")
+        except Exception:
+            pass
         return [], 0, 0, f"Scryfall Error: {str(e)}"
 
 def search_pokemon_tcg(card_name: str, set_hint: str = "", number: str = "") -> Tuple[List[Dict], int, int, str]:
@@ -952,7 +1058,9 @@ def search_pokemon_tcg(card_name: str, set_hint: str = "", number: str = "") -> 
         qs: List[str] = []
         nm = (card_name or "").strip()
         if nm:
-            qs.append(f"name:{nm}")
+            # Always quote the name to correctly handle multi-word names
+            safe_nm = nm.replace('"', '\\"')
+            qs.append(f"name:\"{safe_nm}\"")
         sh = (set_hint or "").strip()
         if sh:
             # Prefer set.id when a short uppercase code is provided; else set.name
@@ -1098,6 +1206,21 @@ def render_pokemon_search_results(cards: List[Dict]):
                     set_code = (card.get('set_code') or '').upper()
                     set_line = f"[{set_code}] {card.get('set','')}" if set_code else f"{card.get('set','')}"
                     st.caption(f"Set: {set_line}  •  No. {card.get('card_number','')}  •  {card.get('year','')}")
+                    # If available, show last updated from local cache metadata
+                    try:
+                        # Prefer the card-level tcgplayer.updatedAt from pokemoncards.csv
+                        tcg = card.get('tcgplayer') or {}
+                        lu = (
+                            (tcg.get('updatedAt') if isinstance(tcg, dict) else None)
+                            or card.get('last_updated')
+                            or card.get('updated_at')
+                            or card.get('updatedAt')
+                            or ((card.get('set') or {}).get('updatedAt') if isinstance(card.get('set'), dict) else None)
+                        )
+                        if lu:
+                            st.caption(f"Last updated: {lu}")
+                    except Exception:
+                        pass
                     if isinstance(card.get('price_usd'), (int,float)) and card.get('price_usd'):
                         st.write(f"Market: ${float(card.get('price_usd')):.2f}")
                     if card.get('link'):
@@ -1391,6 +1514,13 @@ def render_mtg_search_results(cards: List[Dict]):
                             )
                         else:
                             st.markdown(f"<span class='setline'>{set_name_disp} • {meta_txt}</span>", unsafe_allow_html=True)
+                        # If available (typically from local fallback), show last updated timestamp
+                        try:
+                            lu = card.get('updated_at') or card.get('last_updated') or card.get('updatedAt')
+                            if lu:
+                                st.caption(f"Last updated: {lu}")
+                        except Exception:
+                            pass
 
                         # No top-level value line; values are shown per-variant
 
@@ -2142,9 +2272,12 @@ def render_import_export_tab():
                             for f in ['set','set_code','year','link','image_url','price_usd','price_usd_foil','price_usd_etched','date_added']:
                                 if entry.get(f):
                                     acc[ek][f] = entry.get(f)
-                            # sum paid (entry is 0.0 here, but keep logic consistent)
+                            # merge paid using configured strategy
                             try:
-                                acc[ek]['paid'] = float(acc[ek].get('paid',0.0) or 0.0) + float(entry.get('paid',0.0) or 0.0)
+                                strat = st.session_state.get('paid_merge_strategy', 'sum')
+                                old_paid = acc[ek].get('paid', 0.0)
+                                new_paid = entry.get('paid', 0.0)
+                                acc[ek]['paid'] = _merge_paid(old_paid, new_paid, strat)
                             except Exception:
                                 pass
                         else:
@@ -2275,7 +2408,10 @@ def render_import_export_tab():
                             if entry.get(f):
                                 acc[ek][f] = entry.get(f)
                         try:
-                            acc[ek]['paid'] = float(acc[ek].get('paid',0.0) or 0.0) + float(entry.get('paid',0.0) or 0.0)
+                            strat = st.session_state.get('paid_merge_strategy', 'sum')
+                            old_paid = acc[ek].get('paid', 0.0)
+                            new_paid = entry.get('paid', 0.0)
+                            acc[ek]['paid'] = _merge_paid(old_paid, new_paid, strat)
                         except Exception:
                             pass
                     else:
@@ -3958,7 +4094,7 @@ def render_card_sets_view():
     with filt_col2:
         owned_only = st.toggle("Owned only", value=False, key="sets_owned_only")
 
-    def render_sets_table(view_df: pd.DataFrame) -> pd.DataFrame:
+    def render_sets_table(view_df: pd.DataFrame, select_key: str = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
         local = view_df.copy()
         if owned_only:
             local = local[local['Owned Qty'] > 0]
@@ -3972,11 +4108,36 @@ def render_card_sets_view():
                 local = local.drop(columns=['_year_num'])
             except Exception:
                 pass
-        st.dataframe(
-            local.rename(columns={'game': 'Game', 'set_name': 'Set Name', 'released': 'Release Date', 'year': 'Year'}),
-            width='stretch',
-        )
-        return local
+        display_df = local.rename(columns={'game': 'Game', 'set_name': 'Set Name', 'released': 'Release Date', 'year': 'Year'})
+        selected_df = display_df.iloc[[]]
+        if select_key:
+            disp = display_df.copy()
+            if 'Select' not in disp.columns:
+                disp.insert(0, 'Select', False)
+            edited = st.data_editor(
+                disp,
+                width='stretch',
+                hide_index=True,
+                column_config={
+                    'Select': st.column_config.CheckboxColumn('', help=None, default=False, width=40)
+                },
+                disabled=[c for c in disp.columns if c != 'Select'],
+                key=f"data_editor_{select_key}"
+            )
+            try:
+                selected_df = edited[edited['Select'] == True].drop(columns=['Select'], errors='ignore')
+                display_out = edited.drop(columns=['Select'], errors='ignore')
+            except Exception:
+                selected_df = edited.iloc[[]]
+                display_out = edited
+            return display_out, selected_df
+        else:
+            st.dataframe(
+                display_df,
+                width='stretch',
+                hide_index=True,
+            )
+            return display_df, selected_df
 
     # Helper: fetch and cache a full set by game + code
     def _fetch_and_cache_set(game_label: str, set_code: str) -> bool:
@@ -4058,29 +4219,188 @@ def render_card_sets_view():
             st.error(f"Failed to fetch set {set_code}: {e}")
             ok = False
         return ok
+    
+    # Helpers: list sets from APIs
+    def _list_mtg_sets_api() -> List[Dict[str, Any]]:
+        try:
+            if not st.session_state.get('scryfall_enabled', True):
+                st.warning("Scryfall API is disabled in settings.")
+                return []
+            url = "https://api.scryfall.com/sets"
+            resp = requests.get(url, timeout=30)
+            resp.raise_for_status()
+            data = resp.json() or {}
+            items = data.get('data', []) or []
+            # Normalize to {'code': code, 'name': name, 'released_at': released_at, 'digital': digital}
+            out = []
+            for it in items:
+                try:
+                    out.append({
+                        'code': (it.get('code') or '').strip(),
+                        'name': it.get('name') or '',
+                        'released_at': it.get('released_at') or '',
+                        'digital': bool(it.get('digital', False)),
+                    })
+                except Exception:
+                    continue
+            return out
+        except Exception as e:
+            st.error(f"Failed to list MTG sets from Scryfall: {e}")
+            return []
+
+    def _list_pkmn_sets_api() -> List[Dict[str, Any]]:
+        try:
+            if not st.session_state.get('pokemontcg_enabled', False) and not st.session_state.get('pokemonpublic_enabled', True):
+                st.warning("Pokémon TCG API is disabled in settings.")
+                return []
+            url = "https://api.pokemontcg.io/v2/sets"
+            headers = {}
+            try:
+                api_key = st.secrets.get("POKEMONTCG_API_KEY", "")
+            except Exception:
+                api_key = ""
+            if st.session_state.get('pokemontcg_enabled', False) and api_key:
+                headers["X-Api-Key"] = api_key
+            resp = requests.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            data = resp.json() or {}
+            items = data.get('data', []) or []
+            # Normalize to {'id': id, 'name': name, 'releaseDate': releaseDate}
+            out = []
+            for it in items:
+                try:
+                    out.append({
+                        'id': (it.get('id') or '').strip(),
+                        'name': it.get('name') or '',
+                        'releaseDate': it.get('releaseDate') or '',
+                    })
+                except Exception:
+                    continue
+            return out
+        except Exception as e:
+            st.error(f"Failed to list Pokémon sets: {e}")
+            return []
+    
+    # Helpers: append new sets to fallback CSVs (metadata only)
+    def _append_pokemon_sets_csv(new_sets: List[Dict[str, Any]]) -> int:
+        try:
+            base_dir = os.path.dirname(__file__)
+            pkmn_sets_path = os.path.join(base_dir, 'fallback_data', 'Pokemon', 'pokemonsets.csv')
+            os.makedirs(os.path.dirname(pkmn_sets_path), exist_ok=True)
+            existing_ids: Set[str] = set()
+            rows: List[Dict[str, Any]] = []
+            if os.path.exists(pkmn_sets_path):
+                with open(pkmn_sets_path, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    for r in reader:
+                        rid = str((r.get('id') or r.get('code') or r.get('set_code') or r.get('ptcgocode') or '')).strip().lower()
+                        if rid:
+                            existing_ids.add(rid)
+                        rows.append(r)
+            added = 0
+            for s in new_sets:
+                sid = str((s.get('id') or '')).strip()
+                if not sid or sid.lower() in existing_ids:
+                    continue
+                row = {
+                    'id': sid,
+                    'name': s.get('name') or '',
+                    'releaseDate': s.get('releaseDate') or '',
+                    'ptcgoCode': s.get('ptcgoCode') or s.get('ptcgocode') or ''
+                }
+                rows.append(row)
+                existing_ids.add(sid.lower())
+                added += 1
+            # Write back (preserve simple header order)
+            headers = ['id', 'name', 'releaseDate', 'ptcgoCode']
+            with open(pkmn_sets_path, 'w', encoding='utf-8', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=headers)
+                writer.writeheader()
+                for r in rows:
+                    writer.writerow({h: r.get(h, '') for h in headers})
+            return added
+        except Exception as e:
+            st.error(f"Failed to update pokemonsets.csv: {e}")
+            return 0
+
+    def _append_mtg_sets_csv(new_sets: List[Dict[str, Any]]) -> int:
+        try:
+            base_dir = os.path.dirname(__file__)
+            mtg_sets_path = os.path.join(base_dir, 'fallback_data', 'MTG', 'mtgsets.csv')
+            os.makedirs(os.path.dirname(mtg_sets_path), exist_ok=True)
+            existing_codes: Set[str] = set()
+            rows: List[Dict[str, Any]] = []
+            if os.path.exists(mtg_sets_path):
+                with open(mtg_sets_path, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    for r in reader:
+                        code = str((r.get('code') or r.get('set_code') or '')).strip().lower()
+                        if code:
+                            existing_codes.add(code)
+                        rows.append(r)
+            added = 0
+            for s in new_sets:
+                code = str((s.get('code') or '')).strip()
+                if not code or code.lower() in existing_codes:
+                    continue
+                row = {
+                    'code': code,
+                    'name': s.get('name') or '',
+                    'released_at': s.get('released_at') or '',
+                    'digital': str(bool(s.get('digital', False)))
+                }
+                rows.append(row)
+                existing_codes.add(code.lower())
+                added += 1
+            headers = ['code', 'name', 'released_at', 'digital']
+            with open(mtg_sets_path, 'w', encoding='utf-8', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=headers)
+                writer.writeheader()
+                for r in rows:
+                    writer.writerow({h: r.get(h, '') for h in headers})
+            return added
+        except Exception as e:
+            st.error(f"Failed to update mtgsets.csv: {e}")
+            return 0
     tab_all, tab_mtg, tab_pkmn = st.tabs(["All Sets", "Magic: The Gathering", "Pokémon"])
     with tab_all:
-        view_all = render_sets_table(df)
-        with st.expander("Actions", expanded=False):
-            opts = (view_all[['game','set_name','set_code']].copy().reset_index(drop=True) if not view_all.empty else pd.DataFrame(columns=['game','set_name','set_code']))
-            if not opts.empty:
-                sel_idx = st.selectbox(
-                    "Select a set",
-                    options=list(range(len(opts))),
-                    format_func=lambda i: f"{opts.iloc[i]['game']} — {opts.iloc[i]['set_name']} ({opts.iloc[i]['set_code'] or 'no code'})"
-                )
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    if st.button("View in Collection", key="btn_view_in_collection_all"):
-                        sel = opts.iloc[sel_idx]['set_name']
-                        st.session_state[SESSION_KEYS["show_collection_view"]] = True
-                        st.session_state[SESSION_KEYS["show_sets_view"]] = False
-                        st.session_state[SESSION_KEYS["show_mtg_sets_view"]] = False
-                        st.session_state['coll_set_filter'] = sel
-                        st.rerun()
-                with col_b:
-                    if st.button("Download Full Set to Cache", key="btn_download_set_all"):
-                        _fetch_and_cache_set(str(opts.iloc[sel_idx]['game']), str(opts.iloc[sel_idx]['set_code'] or ''))
+        view_all, sel_all = render_sets_table(df, select_key="all")
+        # Bulk actions
+        a1, a2, a3 = st.columns(3)
+        with a1:
+            if st.button("View in Collection", key="btn_view_in_collection_all_multi"):
+                if sel_all.empty:
+                    st.warning("Select at least one set.")
+                else:
+                    name_col = 'Set Name' if 'Set Name' in sel_all.columns else 'set_name'
+                    sel = sel_all.iloc[0][name_col]
+                    st.session_state[SESSION_KEYS["show_collection_view"]] = True
+                    st.session_state[SESSION_KEYS["show_sets_view"]] = False
+                    st.session_state[SESSION_KEYS["show_mtg_sets_view"]] = False
+                    st.session_state['coll_set_filter'] = sel
+                    st.rerun()
+        with a2:
+            if st.button("Update set info", key="btn_update_set_info_all_multi"):
+                st.info("Update set info will be implemented here.")
+        with a3:
+            if st.button("Update cards in set (local cache)", key="btn_update_cards_all_multi"):
+                if sel_all.empty:
+                    st.warning("Select at least one set.")
+                else:
+                    rows = sel_all.copy()
+                    if 'Game' in rows.columns:
+                        rows.rename(columns={'Game':'game'}, inplace=True)
+                    total = len(rows)
+                    pbar = st.progress(0.0, text=f"Updating 0/{total} sets…")
+                    for i in range(total):
+                        game_label = str(rows.iloc[i].get('game') or '')
+                        set_code = str(rows.iloc[i].get('set_code') or '')
+                        _fetch_and_cache_set(game_label, set_code)
+                        pbar.progress((i+1)/total, text=f"Updating {i+1}/{total} sets…")
+                    pbar.empty()
+                    st.success(f"Updated {total} set(s) to cache.")
+            # Prepare opts for bulk download of all visible sets
+            opts = (view_all.copy().reset_index(drop=True) if not view_all.empty else pd.DataFrame(columns=['set_code']))
             # Bulk download all visible sets
             stop_on_error_all = st.toggle("Stop on first error", value=False, key="bulk_stop_on_error_all")
             retry_failed_all = st.toggle("Retry failed sets", value=True, key="bulk_retry_failed_all")
@@ -4188,27 +4508,67 @@ def render_card_sets_view():
         except Exception:
             pass
 
-        view_mtg = render_sets_table(mtg_df)
-        with st.expander("Actions", expanded=False):
-            opts = (view_mtg[['set_name','set_code']].copy().reset_index(drop=True) if not view_mtg.empty else pd.DataFrame(columns=['set_name','set_code']))
-            if not opts.empty:
-                sel_idx = st.selectbox(
-                    "Select MTG set",
-                    options=list(range(len(opts))),
-                    format_func=lambda i: f"{opts.iloc[i]['set_name']} ({opts.iloc[i]['set_code'] or 'no code'})"
-                )
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    if st.button("View in Collection", key="btn_view_in_collection_mtg"):
-                        sel = opts.iloc[sel_idx]['set_name']
-                        st.session_state[SESSION_KEYS["show_collection_view"]] = True
-                        st.session_state[SESSION_KEYS["show_sets_view"]] = False
-                        st.session_state[SESSION_KEYS["show_mtg_sets_view"]] = False
-                        st.session_state['coll_set_filter'] = sel
-                        st.rerun()
-                with col_b:
-                    if st.button("Download Full Set to Cache", key="btn_download_set_mtg"):
-                        _fetch_and_cache_set('Magic: The Gathering', str(opts.iloc[sel_idx]['set_code'] or ''))
+        # Hide duplicate/unnecessary columns in MTG tab
+        try:
+            mtg_df_disp = mtg_df.drop(columns=[
+                'year', 'cards_in_set', 'digital'
+            ], errors='ignore')
+        except Exception:
+            mtg_df_disp = mtg_df
+        view_mtg, sel_mtg = render_sets_table(mtg_df_disp, select_key="mtg")
+        # Bulk actions for MTG
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            if st.button("View in Collection", key="btn_view_in_collection_mtg_multi"):
+                if sel_mtg.empty:
+                    st.warning("Select at least one set.")
+                else:
+                    name_col = 'Set Name' if 'Set Name' in sel_mtg.columns else 'set_name'
+                    sel = sel_mtg.iloc[0][name_col]
+                    st.session_state[SESSION_KEYS["show_collection_view"]] = True
+                    st.session_state[SESSION_KEYS["show_sets_view"]] = False
+                    st.session_state[SESSION_KEYS["show_mtg_sets_view"]] = False
+                    st.session_state['coll_set_filter'] = sel
+                    st.rerun()
+        with m2:
+            if st.button("Update set info", key="btn_update_set_info_mtg_multi"):
+                st.info("Update set info will be implemented here.")
+        with m3:
+            if st.button("Update cards in set (local cache)", key="btn_update_cards_mtg_multi"):
+                if sel_mtg.empty:
+                    st.warning("Select at least one set.")
+                else:
+                    rows = sel_mtg.copy()
+                    total = len(rows)
+                    pbar = st.progress(0.0, text=f"Updating 0/{total} MTG sets…")
+                    for i in range(total):
+                        set_code = str(rows.iloc[i].get('set_code') or '')
+                        _fetch_and_cache_set('Magic: The Gathering', set_code)
+                        pbar.progress((i+1)/total, text=f"Updating {i+1}/{total} MTG sets…")
+                    pbar.empty()
+                    st.success(f"Updated {total} MTG set(s) to cache.")
+        with m4:
+            if st.button("Pull new sets", key="btn_pull_new_sets_mtg"):
+                try:
+                    existing_codes = set(
+                        str(c).strip().lower() for c in (view_mtg.get('set_code') or [])
+                    ) if isinstance(view_mtg, pd.DataFrame) else set()
+                except Exception:
+                    existing_codes = set()
+                api_sets = _list_mtg_sets_api()
+                new_sets = [s for s in api_sets if (s.get('code') or '').strip().lower() not in existing_codes and (s.get('code') or '').strip()]
+                if not new_sets:
+                    st.info("No new MTG sets found.")
+                else:
+                    total = len(new_sets)
+                    pbar = st.progress(0.0, text=f"Adding 0/{total} MTG sets to catalog…")
+                    added = 0
+                    # Append to mtgsets.csv (metadata only)
+                    added = _append_mtg_sets_csv(new_sets)
+                    pbar.progress(1.0, text=f"Added {added}/{total} MTG sets.")
+                    pbar.empty()
+                    st.success(f"Added {added} new MTG set(s) to catalog.")
+        
         # Bulk download for MTG visible sets
         if not view_mtg.empty:
             _mtg_opts = (view_mtg[['set_code']].copy().reset_index(drop=True))
@@ -4245,27 +4605,62 @@ def render_card_sets_view():
                         df_res = pd.DataFrame(results)
                         st.dataframe(df_res[["game", "set_code", "status"]], use_container_width=True)
     with tab_pkmn:
-        view_pkmn = render_sets_table(df[df['game'] == 'Pokémon'])
-        with st.expander("Actions", expanded=False):
-            opts = (view_pkmn[['set_name','set_code']].copy().reset_index(drop=True) if not view_pkmn.empty else pd.DataFrame(columns=['set_name','set_code']))
-            if not opts.empty:
-                sel_idx = st.selectbox(
-                    "Select Pokémon set",
-                    options=list(range(len(opts))),
-                    format_func=lambda i: f"{opts.iloc[i]['set_name']} ({opts.iloc[i]['set_code'] or 'no code'})"
-                )
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    if st.button("View in Collection", key="btn_view_in_collection_pkmn"):
-                        sel = opts.iloc[sel_idx]['set_name']
-                        st.session_state[SESSION_KEYS["show_collection_view"]] = True
-                        st.session_state[SESSION_KEYS["show_sets_view"]] = False
-                        st.session_state[SESSION_KEYS["show_mtg_sets_view"]] = False
-                        st.session_state['coll_set_filter'] = sel
-                        st.rerun()
-                with col_b:
-                    if st.button("Download Full Set to Cache", key="btn_download_set_pkmn"):
-                        _fetch_and_cache_set('Pokémon', str(opts.iloc[sel_idx]['set_code'] or ''))
+        try:
+            pkmn_df = df[df['game'] == 'Pokémon'].copy()
+            pkmn_df_disp = pkmn_df.drop(columns=['year', 'cards_in_set', 'digital', 'set_type'], errors='ignore')
+        except Exception:
+            pkmn_df_disp = df[df['game'] == 'Pokémon']
+        view_pkmn, sel_pkmn = render_sets_table(pkmn_df_disp, select_key="pkmn")
+        # Bulk actions for Pokémon
+        p1, p2, p3, p4 = st.columns(4)
+        with p1:
+            if st.button("View in Collection", key="btn_view_in_collection_pkmn_multi"):
+                if sel_pkmn.empty:
+                    st.warning("Select at least one set.")
+                else:
+                    name_col = 'Set Name' if 'Set Name' in sel_pkmn.columns else 'set_name'
+                    sel = sel_pkmn.iloc[0][name_col]
+                    st.session_state[SESSION_KEYS["show_collection_view"]] = True
+                    st.session_state[SESSION_KEYS["show_sets_view"]] = False
+                    st.session_state[SESSION_KEYS["show_mtg_sets_view"]] = False
+                    st.session_state['coll_set_filter'] = sel
+                    st.rerun()
+        with p2:
+            if st.button("Update set info", key="btn_update_set_info_pkmn_multi"):
+                st.info("Update set info will be implemented here.")
+        with p3:
+            if st.button("Update cards in set (local cache)", key="btn_update_cards_pkmn_multi"):
+                if sel_pkmn.empty:
+                    st.warning("Select at least one set.")
+                else:
+                    rows = sel_pkmn.copy()
+                    total = len(rows)
+                    pbar = st.progress(0.0, text=f"Updating 0/{total} Pokémon sets…")
+                    for i in range(total):
+                        set_code = str(rows.iloc[i].get('set_code') or '')
+                        _fetch_and_cache_set('Pokémon', set_code)
+                        pbar.progress((i+1)/total, text=f"Updating {i+1}/{total} Pokémon sets…")
+                    pbar.empty()
+                    st.success(f"Updated {total} Pokémon set(s) to cache.")
+        with p4:
+            if st.button("Pull new sets", key="btn_pull_new_sets_pkmn"):
+                try:
+                    existing_codes = set(
+                        str(c).strip().lower() for c in (view_pkmn.get('set_code') or [])
+                    ) if isinstance(view_pkmn, pd.DataFrame) else set()
+                except Exception:
+                    existing_codes = set()
+                api_sets = _list_pkmn_sets_api()
+                new_sets = [s for s in api_sets if (s.get('id') or '').strip().lower() not in existing_codes and (s.get('id') or '').strip()]
+                if not new_sets:
+                    st.info("No new Pokémon sets found.")
+                else:
+                    total = len(new_sets)
+                    pbar = st.progress(0.0, text=f"Adding 0/{total} Pokémon sets to catalog…")
+                    added = _append_pokemon_sets_csv(new_sets)
+                    pbar.progress(1.0, text=f"Added {added}/{total} Pokémon sets.")
+                    pbar.empty()
+                    st.success(f"Added {added} new Pokémon set(s) to catalog.")
         # Bulk download for Pokémon visible sets
         if not view_pkmn.empty:
             _pk_opts = (view_pkmn[['set_code']].copy().reset_index(drop=True))
@@ -4306,27 +4701,176 @@ def render_settings_view():
     """Render Settings page for app behavior preferences."""
     st.title("⚙️ Settings")
     st.caption("Configure how adding duplicates behaves and other preferences")
+    tabs = st.tabs(["General", "Data Sources", "Debug"])
 
-    st.subheader("Duplicate Handling")
-    dup_map = {
-        "Merge quantities (recommended)": "merge",
-        "Keep separate entries (track each purchase)": "separate",
-    }
-    current = st.session_state.get("duplicate_strategy", "merge")
-    choice = st.radio(
-        "When adding a card that already exists (same game, name, set, card number, variant):",
-        options=list(dup_map.keys()),
-        index=0 if current == "merge" else 1,
-        help=(
-            "Merge: increases Quantity on the existing row and adds the new Paid amount to the existing Paid total.\n"
-            "Separate: creates a new row so you can record a distinct Paid amount for each purchase."
-        ),
-    )
-    st.session_state["duplicate_strategy"] = dup_map[choice]
-    st.success(f"Duplicate handling set to: {dup_map[choice]}")
-    # Additional inline guidance for Paid behavior
-    st.caption("• Merge quantities: Paid is accumulated (sum of all adds).")
-    st.caption("• Keep separate entries: each row keeps its own Paid value per add.")
+    # General tab (Duplicate handling)
+    with tabs[0]:
+        st.subheader("Duplicate Handling")
+        dup_map = {
+            "Merge quantities (recommended)": "merge",
+            "Keep separate entries (track each purchase)": "separate",
+        }
+        current = st.session_state.get("duplicate_strategy", "merge")
+        choice = st.radio(
+            "When adding a card that already exists (same game, name, set, card number, variant):",
+            options=list(dup_map.keys()),
+            index=0 if current == "merge" else 1,
+            help=(
+                "Merge: increases Quantity on the existing row and adds the new Paid amount to the existing Paid total.\n"
+                "Separate: creates a new row so you can record a distinct Paid amount for each purchase."
+            ),
+        )
+        st.session_state["duplicate_strategy"] = dup_map[choice]
+        st.success(f"Duplicate handling set to: {dup_map[choice]}")
+        st.caption("• Merge quantities: Paid is accumulated (sum of all adds).")
+        st.caption("• Keep separate entries: each row keeps its own Paid value per add.")
+
+        st.divider()
+        st.subheader("Paid Merge Strategy")
+        pms_current = st.session_state.get("paid_merge_strategy", "sum")
+        pms = st.selectbox(
+            "When merging entries, how should Paid be combined?",
+            options=["sum", "average", "ignore"],
+            index={"sum":0, "average":1, "ignore":2}.get(pms_current, 0),
+            help="sum: add amounts together; average: arithmetic mean of existing and new; ignore: keep existing"
+        )
+        st.session_state["paid_merge_strategy"] = pms
+
+        st.divider()
+        st.subheader("Defaults: Owner & Set Profile")
+        owners = list_owner_folders()
+        if owners:
+            try:
+                def_owner = st.session_state.get('default_owner_label')
+            except Exception:
+                def_owner = None
+            try:
+                def_idx = owners.index(def_owner) if def_owner in owners else 0
+            except Exception:
+                def_idx = 0
+            sel_owner = st.selectbox("Default Owner", owners, index=def_idx, key='default_owner_label', help="Owner used by default on app load")
+
+            # Determine profiles available for this owner
+            try:
+                coll_dir = get_collections_dir()
+                raw_owner = _owner_from_folder_label(sel_owner)
+                oid = _sanitize_owner_id(raw_owner)
+                profiles = set()
+                for fn in os.listdir(os.path.join(coll_dir, sel_owner)):
+                    if fn.startswith(f"{oid}-") and fn.endswith("-unified_collection.csv"):
+                        mid = fn[len(oid)+1:-len("-unified_collection.csv")]
+                        if mid:
+                            profiles.add(mid)
+                    if fn == f"{oid}-unified_collection.csv":
+                        profiles.add('default')
+                if not profiles:
+                    profiles = {'default'}
+            except Exception:
+                profiles = {'default'}
+            prof_list = sorted(profiles)
+            cur_prof = _get_active_profile_for_owner_label(sel_owner)
+            try:
+                pidx = prof_list.index(cur_prof) if cur_prof in prof_list else 0
+            except Exception:
+                pidx = 0
+            sel_prof = st.selectbox("Default Set Profile", prof_list, index=pidx, key='settings_default_profile')
+
+            if st.button("Save Defaults", key="btn_save_defaults"):
+                prefs = load_owner_prefs() or {}
+                prefs['default_owner_label'] = st.session_state.get('default_owner_label')
+                ap = prefs.get('active_profiles') or {}
+                if not isinstance(ap, dict):
+                    ap = {}
+                ap[sel_owner] = _sanitize_profile_id(sel_prof)
+                prefs['active_profiles'] = ap
+                ok = save_owner_prefs(prefs)
+                if ok:
+                    st.success("Default owner/profile saved.")
+                    _set_active_profile_for_owner_label(sel_owner, _sanitize_profile_id(sel_prof))
+                else:
+                    st.error("Failed to save defaults.")
+        else:
+            st.info("No owners yet. Create one in Collection Management.")
+
+        st.divider()
+        st.subheader("Auto-backup on Save")
+        st.checkbox("Create timestamped CSV backup before saving", key="auto_backup_enabled", value=st.session_state.get("auto_backup_enabled", False))
+        st.number_input("Backup retention (most recent backups to keep)", min_value=0, max_value=50, value=int(st.session_state.get("backup_retention", 5) or 5), step=1, key="backup_retention")
+        if st.button("Save General Settings", key="btn_save_general"):
+            cfg = dict(st.session_state.get("api_config") or {})
+            cfg.update({
+                "duplicate_strategy": st.session_state.get("duplicate_strategy", "merge"),
+                "paid_merge_strategy": st.session_state.get("paid_merge_strategy", "sum"),
+                "auto_backup_enabled": bool(st.session_state.get("auto_backup_enabled", False)),
+                "backup_retention": int(st.session_state.get("backup_retention", 5) or 5),
+            })
+            ok = save_api_config(cfg)
+            st.session_state["api_config"] = cfg
+            try:
+                st.toast("General settings saved." if ok else "Failed to save general settings.", icon="✅" if ok else "⚠️")
+            except Exception:
+                if ok:
+                    st.success("General settings saved.")
+                else:
+                    st.error("Failed to save general settings.")
+            st.rerun()
+
+    # Data Sources tab
+    with tabs[1]:
+        st.subheader("Data Sources")
+        col_api1, col_api2 = st.columns(2)
+        with col_api1:
+            st.checkbox("Enable Scryfall (MTG)", key="scryfall_enabled", value=st.session_state.get("scryfall_enabled", True))
+            st.checkbox("Enable Pokémon TCG API", key="pokemontcg_enabled", value=st.session_state.get("pokemontcg_enabled", False))
+            st.checkbox("Enable JustTCG", key="justtcg_enabled", value=st.session_state.get("justtcg_enabled", False))
+            st.checkbox("Enable eBay Search", key="ebay_enabled", value=st.session_state.get("ebay_enabled", True))
+            st.checkbox("Enable SportsCardDatabase (Baseball)", key="sportscarddatabase_enabled", value=st.session_state.get("sportscarddatabase_enabled", True))
+        with col_api2:
+            st.selectbox("eBay Environment", options=["Sandbox","Production"], key="last_ebay_env", index=(0 if st.session_state.get("last_ebay_env","Sandbox")!="Production" else 1))
+            st.checkbox("Use public Pokémon images (fallback)", key="pokemonpublic_enabled", value=st.session_state.get("pokemonpublic_enabled", True))
+            st.checkbox("Enable SportCardsPro (temporarily disabled)", key="sportscardspro_enabled", value=st.session_state.get("sportscardspro_enabled", False), disabled=True, help="Site currently blocks automated requests")
+
+        if st.button("Save API Settings", key="btn_save_api_settings"):
+            cfg = dict(st.session_state.get("api_config") or {})
+            cfg.update({
+                "scryfall_enabled": bool(st.session_state.get("scryfall_enabled", True)),
+                "pokemontcg_enabled": bool(st.session_state.get("pokemontcg_enabled", False)),
+                # keep existing pokemontcg_api if present; not editable here
+                "pokemontcg_api": cfg.get("pokemontcg_api", "https://api.pokemontcg.io/v2/cards"),
+                "justtcg_enabled": bool(st.session_state.get("justtcg_enabled", False)),
+                "pokemonpublic_enabled": bool(st.session_state.get("pokemonpublic_enabled", True)),
+                "ebay_enabled": bool(st.session_state.get("ebay_enabled", True)),
+                "sportscarddatabase_enabled": bool(st.session_state.get("sportscarddatabase_enabled", True)),
+                "sportscardspro_enabled": bool(st.session_state.get("sportscardspro_enabled", False)),
+                "last_ebay_env": st.session_state.get("last_ebay_env", "Sandbox"),
+            })
+            ok = save_api_config(cfg)
+            st.session_state["api_config"] = cfg
+            try:
+                st.toast("API settings saved." if ok else "Failed to save API settings.", icon="✅" if ok else "⚠️")
+            except Exception:
+                if ok:
+                    st.success("API settings saved.")
+                else:
+                    st.error("Failed to save API settings.")
+            st.rerun()
+
+    # Debug tab
+    with tabs[2]:
+        st.subheader("Debug Mode")
+        st.checkbox("🐛 Enable Debug Mode (show diagnostics banners/logs)", key=SESSION_KEYS["debug_mode"], value=st.session_state.get(SESSION_KEYS["debug_mode"], False))
+        if st.button("Save Debug Preference", key="btn_save_debug_pref"):
+            cfg = dict(st.session_state.get("api_config") or {})
+            cfg.update({SESSION_KEYS["debug_mode"]: bool(st.session_state.get(SESSION_KEYS["debug_mode"], False))})
+            ok = save_api_config(cfg)
+            st.session_state["api_config"] = cfg
+            try:
+                st.toast("Debug preference saved." if ok else "Failed to save debug preference.", icon="🪲" if ok else "⚠️")
+            except Exception:
+                if ok:
+                    st.success("Debug preference saved.")
+                else:
+                    st.error("Failed to save debug preference.")
 
 def render_statistics_view(collection: List[Dict]):
     """Render detailed collection statistics"""
@@ -4593,6 +5137,32 @@ def main():
     
     # Initialize session state
     initialize_session_state()
+    # Early handler: process any queued MTG refresh request before building the rest of the UI
+    try:
+        if st.session_state.get("mtg_force_refresh"):
+            rq = st.session_state.pop("mtg_force_refresh") or {}
+            qn = (rq.get("name") or "").strip()
+            qs = (rq.get("set") or "").strip()
+            qnum = (rq.get("number") or "").strip()
+            if qn:
+                st.info(f"🔧 (early) MTG refresh • name=\"{qn}\" • set=\"{qs}\" • number=\"{qnum}\"")
+                st.caption(f"Scryfall params: q=\"{qn}\" set_hint=\"{qs}\" number=\"{qnum}\"")
+                if not st.session_state.get("scryfall_enabled", True):
+                    st.warning("Scryfall API is disabled in Settings → Data Sources. Enable it to refresh from API.")
+                    # Do not stop; fall through to normal UI
+                with st.spinner(f"🔄 Refreshing from Scryfall for {qn}..."):
+                    cards, total, _, source = search_mtg_scryfall(qn, set_hint=qs, collector_number=qnum)
+                st.success(f"✅ MTG refresh complete: {total} result(s) from {source}")
+                if cards:
+                    st.session_state["mtg_last_results"] = cards
+                    st.session_state["mtg_results_visible"] = True
+                    render_mtg_search_results(cards)
+                    st.stop()
+                else:
+                    # Mark no-results so the local path can show a notice; continue to normal rendering
+                    st.session_state["mtg_api_no_results"] = True
+    except Exception as _e:
+        st.error(f"MTG early refresh failed: {_e}")
     
     # Sidebar
     with st.sidebar:
@@ -4719,103 +5289,12 @@ def main():
         
         st.markdown("---")
         
-        # API Sources expander
-        with st.expander("API Sources", expanded=False):
-            # Pokemon sources
-            st.subheader("🎮 Pokémon")
-            st.write("**Pokémon TCG API** (Requires API Key)")
-            pokemon_enabled = st.toggle("Enable Pokémon TCG", value=st.session_state.get("pokemontcg_enabled", False), key="pokemontcg_enabled")
-            if pokemon_enabled:
-                api_key = get_secret("POKEMONTCG_API_KEY")
-                if api_key:
-                    st.success("✅ Pokémon API key configured")
-                else:
-                    st.error("❌ Pokémon API key missing")
-                    st.code("POKEMONTCG_API_KEY = 'your_key_here'")
-            st.caption("Official Pokémon TCG database with pricing")
-            
-            st.write("**JustTCG API** (Requires API Key)")
-            justtcg_enabled = st.toggle("Enable JustTCG", value=st.session_state.get("justtcg_enabled", False), key="justtcg_enabled")
-            if justtcg_enabled:
-                api_key = get_secret("JUSTTCG_API_KEY")
-                if api_key:
-                    st.success("✅ JustTCG API key configured")
-                else:
-                    st.error("❌ JustTCG API key missing")
-                    st.code("JUSTTCG_API_KEY = 'your_key_here'")
-            st.caption("Multi-TCG pricing database - supports Pokémon, MTG, and more")
-            
-            # MTG sources
-            st.subheader("🧙 Magic: The Gathering")
-            st.write("**Scryfall API** (Free)")
-            scryfall_enabled = st.toggle("Enable Scryfall", value=st.session_state.get("scryfall_enabled", True), key="scryfall_enabled")
-            st.caption("Free Magic card database with images and pricing")
-            
-            # Baseball sources
-            st.subheader("⚾ Baseball Cards")
-            st.write("🗃️ **SportsCardDatabase.com** (Free)")
-            sportscarddatabase_enabled = st.toggle("Enable SportsCardDatabase", value=st.session_state.get("sportscarddatabase_enabled", True), key="sportscarddatabase_enabled")
-            st.caption("Free baseball card database with comprehensive collection")
-            
-            st.write("📊 **SportCardsPro.com** (Free - Temporarily Disabled)")
-            sportscardspro_enabled = st.toggle("Enable SportCardsPro", value=False, key="sportscardspro_enabled", disabled=True)
-            st.caption("⚠️ Temporarily disabled - site is blocking automated requests")
-            
-            st.write("🛒 **eBay** (Requires API Key)")
-            ebay_enabled = st.toggle("Enable eBay", value=st.session_state.get("ebay_enabled", True), key="ebay_enabled")
-            if ebay_enabled:
-                # Production vs Sandbox selection
-                prod_key = get_secret("EBAY_APP_ID")
-                sandbox_key = get_secret("EBAY_APP_ID_SBX")
-                
-                if prod_key and sandbox_key:
-                    st.write("**eBay Environment:**")
-                    ebay_env = st.radio(
-                        "Choose eBay Environment",
-                        ["Production", "Sandbox"],
-                        index=1 if "SBX" in str(st.session_state.get("last_ebay_env", "Sandbox")) else 0,
-                        horizontal=True,
-                        key="ebay_environment",
-                        help="Production uses real eBay data, Sandbox uses test data"
-                    )
-                    st.session_state["last_ebay_env"] = ebay_env
-                    
-                    if ebay_env == "Production":
-                        st.success("✅ Production API configured")
-                        st.caption("🚀 Using real eBay marketplace data")
-                    else:
-                        st.info("🧪 Sandbox API configured")
-                        st.caption("🧪 Using eBay test environment (mock data)")
-                        
-                elif prod_key:
-                    st.success("✅ Production API key configured")
-                    st.caption("🚀 Using real eBay marketplace data")
-                    st.session_state["last_ebay_env"] = "Production"
-                elif sandbox_key:
-                    st.info("🧪 Sandbox API key configured")
-                    st.caption("🧪 Using eBay test environment (mock data)")
-                    st.session_state["last_ebay_env"] = "Sandbox"
-                else:
-                    st.error("❌ eBay API key missing in .streamlit/secrets.toml")
-                    st.code("EBAY_APP_ID = 'your_production_key_here'")
-                    st.code("EBAY_APP_ID_SBX = 'your_sandbox_key_here'")
-            st.caption("eBay marketplace for baseball cards with real listings")
-            
-            # Debug information
-            if st.session_state.get("debug_mode", False):
-                st.divider()
-                st.write("**🔍 Debug - Current Toggle Values:**")
-                st.write(f"- Pokémon TCG API: {st.session_state.get('pokemontcg_enabled', 'NOT SET')}")
-                st.write(f"- JustTCG API: {st.session_state.get('justtcg_enabled', 'NOT SET')}")
-                st.write(f"- Scryfall API: {st.session_state.get('scryfall_enabled', 'NOT SET')}")
-                st.write(f"- SportsCardDatabase: {st.session_state.get('sportscarddatabase_enabled', 'NOT SET')}")
-                st.write(f"- eBay: {st.session_state.get('ebay_enabled', 'NOT SET')}")
-                st.write(f"- eBay Environment: {st.session_state.get('last_ebay_env', 'NOT SET')}")
         
-        # Debug Options
-        with st.expander("Debug Options", expanded=False):
-            debug_mode = st.toggle("🐛 Debug Mode", value=False, key=SESSION_KEYS["debug_mode"], help="Enable debug output for troubleshooting")
-            st.caption("Show detailed search process and API call information")
+        # Debug Options (hidden when Settings page is active to avoid duplicate keys)
+        if not st.session_state.get("show_settings_view", False):
+            with st.expander("Debug Options", expanded=False):
+                debug_mode = st.toggle("🐛 Debug Mode", value=False, key=SESSION_KEYS["debug_mode"], help="Enable debug output for troubleshooting")
+                st.caption("Show detailed search process and API call information")
     
     # Main content area
     # Handle different views
@@ -4881,6 +5360,32 @@ def main():
             key="game_selection_main"
         )
         st.session_state["last_game"] = game
+
+        # Global MTG Refresh bar (works even when the main search form isn't submitted)
+        try:
+            last_mtg = st.session_state.get("mtg_last_query") or {}
+            if last_mtg.get("name"):
+                with st.container():
+                    st.markdown("---")
+                    cols_rf = st.columns([3,1])
+                    with cols_rf[0]:
+                        st.caption(f"Last MTG query: {last_mtg.get('name','')} (name only refresh)")
+                    with cols_rf[1]:
+                        if st.button("Force Scryfall Refresh", key="mtg_force_refresh_global"):
+                            nm = (last_mtg.get("name") or "").strip()
+                            st.info(f"🔧 Global MTG refresh • name=\"{nm}\"")
+                            with st.spinner(f"🔄 Refreshing from Scryfall for {nm}..."):
+                                cards, total, _, source = search_mtg_scryfall(nm, set_hint="", collector_number="")
+                            st.success(f"✅ MTG refresh complete: {total} result(s) from {source}")
+                            if cards:
+                                st.session_state["mtg_last_results"] = cards
+                                st.session_state["mtg_results_visible"] = True
+                                render_mtg_search_results(cards)
+                                st.stop()
+                            else:
+                                st.warning("No fresh results from Scryfall; showing local cache.")
+        except Exception:
+            pass
 
         # Search form
         with st.form("search_form"):
@@ -4996,6 +5501,29 @@ def main():
                     st.info("💡 Please enable at least one baseball card source in API Sources settings")
             else:
                 st.error("❌ Please enter a player name to search")
+        # Support a refresh-triggered MTG API search even when the form isn't re-submitted
+        if st.session_state.get("mtg_force_refresh"):
+            try:
+                rq = st.session_state.pop("mtg_force_refresh") or {}
+                qn = rq.get("name", "").strip()
+                qs = rq.get("set", "").strip()
+                qnum = rq.get("number", "").strip()
+                if qn:
+                    st.info(f"🔧 MTG refresh handler running • name=\"{qn}\" • set=\"{qs}\" • number=\"{qnum}\"")
+                    with st.spinner(f"🔄 Refreshing from Scryfall for {qn}..."):
+                        cards, total, _, source = search_mtg_scryfall(qn, set_hint=qs, collector_number=qnum)
+                    st.success(f"✅ MTG refresh complete: {total} result(s) from {source}")
+                    if cards:
+                        st.session_state["mtg_last_results"] = cards
+                        st.session_state["mtg_results_visible"] = True
+                        render_mtg_search_results(cards)
+                        return
+                    else:
+                        st.info("No results found from API.")
+                        return
+            except Exception as _e:
+                st.error(f"Refresh failed: {_e}")
+                return
         elif submitted and game == "Magic: The Gathering":
             # MTG search: fallback-first from local CSV, with option to refresh via Scryfall
             if 'mtg_name' in locals() and str(mtg_name).strip():
@@ -5015,10 +5543,31 @@ def main():
                     except Exception:
                         pass
 
+                # Persist last MTG query (used by the global refresh bar)
+                st.session_state["mtg_last_query"] = {"name": query_name, "set": query_set, "number": collector_number}
+
                 # Try local fallback first
                 local_cards = find_mtg_cards_local(query_name, set_hint=query_set, collector_number=collector_number)
                 force_api = False
                 if local_cards:
+                    # If an inline refresh was queued last click, handle it now before showing local
+                    try:
+                        if st.session_state.get('mtg_inline_refresh') and st.session_state.get('mtg_inline_name') == query_name:
+                            st.session_state['mtg_inline_refresh'] = False
+                            st.info(f"🔧 Inline MTG refresh • name=\"{query_name}\"")
+                            print(f"[DEBUG] inline-refresh: calling Scryfall for name='{query_name}'")
+                            with st.spinner(f"🔄 Refreshing from Scryfall for {query_name}..."):
+                                cards, total, _, source = search_mtg_scryfall(query_name, set_hint="", collector_number="")
+                            st.success(f"✅ MTG refresh complete: {total} result(s) from {source}")
+                            if cards:
+                                st.session_state["mtg_last_results"] = cards
+                                st.session_state["mtg_results_visible"] = True
+                                render_mtg_search_results(cards)
+                                return
+                            else:
+                                st.warning("No fresh results from Scryfall; showing local cache.")
+                    except Exception as _ir:
+                        print(f"[DEBUG] inline-refresh error: {_ir}")
                     try:
                         last_upd = local_cards[0].get('updated_at') or 'unknown'
                         st.toast(f"Using local data — Last updated {last_upd}", icon="💾")
@@ -5026,12 +5575,22 @@ def main():
                         pass
                     cols = st.columns([1,3])
                     with cols[0]:
-                        force_api = st.button("Refresh from API", key="mtg_refresh_api")
-                    if not force_api:
-                        st.session_state["mtg_last_results"] = local_cards
-                        st.session_state["mtg_results_visible"] = True
-                        render_mtg_search_results(local_cards)
-                        return
+                        clicked = st.button("Refresh from API", key=f"mtg_refresh_api_{query_name}")
+                        if clicked:
+                            # Queue inline refresh and rerun so we come back here and execute above
+                            st.session_state['mtg_inline_refresh'] = True
+                            st.session_state['mtg_inline_name'] = query_name
+                            try:
+                                print(f"[DEBUG] button-click: queued inline mtg refresh for name='{query_name}'")
+                                st.toast(f"🔁 Queued MTG refresh • name=\"{query_name}\"", icon="🪄")
+                            except Exception:
+                                pass
+                            st.rerun()
+                    # Show local results only when not clicked (the rerun will be handled by early handler)
+                    st.session_state["mtg_last_results"] = local_cards
+                    st.session_state["mtg_results_visible"] = True
+                    render_mtg_search_results(local_cards)
+                    return
 
                 with st.spinner(f"🔍 Searching Scryfall for {query_name}..."):
                     cards, total, _, source = search_mtg_scryfall(query_name, set_hint=query_set, collector_number=collector_number)
@@ -5086,10 +5645,11 @@ def main():
                             year = (str(released)[:4] if released else "")
                             imgs = (c.get("images") or {})
                             img_url = imgs.get("small") or imgs.get("large") or ""
-                            link = ( (c.get("tcgplayer") or {}).get("url")
+                            tcg_obj = (c.get("tcgplayer") or {})
+                            link = ( (tcg_obj or {}).get("url")
                                      or (c.get("cardmarket") or {}).get("url")
                                      or f"https://pokemontcg.io/card/{c.get('id','')}")
-                            prices = ((c.get("tcgplayer") or {}).get("prices") or {})
+                            prices = (tcg_obj.get("prices") or {})
                             def _g(pr, k):
                                 try:
                                     return float((pr or {}).get(k) or 0)
@@ -5124,7 +5684,11 @@ def main():
                                 "quantity": 1,
                                 "variety": "",
                                 "prices_map": prices_map,
-                                "source": "Local Fallback"
+                                "source": "Local Fallback",
+                                # Carry forward tcgplayer for updatedAt and future needs
+                                "tcgplayer": tcg_obj,
+                                # Derive a display-friendly last_updated from tcgplayer.updatedAt if present
+                                "last_updated": (tcg_obj.get("updatedAt") if isinstance(tcg_obj, dict) else None)
                             }
                             norm_cards.append(card)
                         except Exception:
