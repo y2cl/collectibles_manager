@@ -27,6 +27,7 @@ from constants import (
 )
 from fallback_manager import (
     store_pokemon_card, store_pokemon_set, store_mtg_card, store_mtg_set, get_fallback_stats,
+    find_pokemon_cards_local, find_mtg_cards_local,
 )
 from image_sources import find_baseball_card_image
 
@@ -645,12 +646,19 @@ def render_variant_selector(game: str, prices: Dict, selector_key: str) -> Dict:
             variants.append("etched")
             selected_prices["etched"] = prices["usd_etched"]
     elif game == "Pokémon":
-        if prices.get("low") is not None:
-            variants.append("normal")
-            selected_prices["normal"] = prices["low"]
-        if prices.get("holo") is not None:
-            variants.append("holo")
-            selected_prices["holo"] = prices["holo"]
+        # Support TCGPlayer-style keys and map to friendly variant names
+        # prices may include: normal, holofoil, reverseHolofoil, 1stEditionHolofoil, 1stEdition
+        mapping = {
+            "normal": "normal",
+            "holofoil": "holo",
+            "reverseHolofoil": "reverse_holo",
+            "1stEditionHolofoil": "1st_edition_holo",
+            "1stEdition": "1st_edition"
+        }
+        for src_key, vname in mapping.items():
+            if prices.get(src_key) is not None:
+                variants.append(vname)
+                selected_prices[vname] = prices.get(src_key) or 0.0
     elif game == "Baseball Cards":
         if prices.get("price_usd") is not None:
             variants.append("base")
@@ -918,11 +926,373 @@ def search_mtg_scryfall(card_name: str, set_hint: str = "", collector_number: st
                     "has_foil": has_foil
                 }
                 cards.append(card)
+                # Persist full raw card to fallback for offline use
+                try:
+                    if st.session_state.get("fallback_enabled", True):
+                        store_mtg_card(c)
+                except Exception:
+                    pass
             except Exception:
                 continue
         return cards, len(cards), len(items), "Scryfall"
     except Exception as e:
         return [], 0, 0, f"Scryfall Error: {str(e)}"
+
+def search_pokemon_tcg(card_name: str, set_hint: str = "", number: str = "") -> Tuple[List[Dict], int, int, str]:
+    """Search Pokémon cards via the Pokémon TCG API.
+    Returns (cards, shown_count, total_count, source_label).
+    """
+    try:
+        # Check toggles
+        enabled = bool(st.session_state.get("pokemontcg_enabled", False) or st.session_state.get("pokemonpublic_enabled", False))
+        if not enabled:
+            return [], 0, 0, "Pokémon TCG Disabled"
+
+        # Build query string per API syntax: q=name:Pikachu set.name:"Base Set" number:58
+        qs: List[str] = []
+        nm = (card_name or "").strip()
+        if nm:
+            qs.append(f"name:{nm}")
+        sh = (set_hint or "").strip()
+        if sh:
+            # Prefer set.id when a short uppercase code is provided; else set.name
+            if len(sh) <= 5 and sh.upper() == sh:
+                qs.append(f"set.id:{sh}")
+            else:
+                qs.append(f"set.name:\"{sh}\"")
+        num = (number or "").strip()
+        if num:
+            qs.append(f"number:{num}")
+        q = " ".join(qs) if qs else nm
+
+        params = {"q": q, "orderBy": "set.releaseDate"}
+        url = st.session_state.get("pokemontcg_api", "https://api.pokemontcg.io/v2/cards")
+        headers = {}
+        # Optional API key
+        try:
+            api_key = st.secrets.get("POKEMONTCG_API_KEY", "")
+        except Exception:
+            api_key = ""
+        if st.session_state.get("pokemontcg_enabled", False) and api_key:
+            headers["X-Api-Key"] = api_key
+
+        resp = requests.get(url, params=params, headers=headers, timeout=30)
+        resp.raise_for_status()
+        data = resp.json() or {}
+        items = data.get("data", [])
+        # If no results and a number was provided, retry without number and do a client-side prefix match.
+        if not items and num:
+            params_no_num = {"q": " ".join([s for s in qs if not s.startswith("number:")]) or nm, "orderBy": "set.releaseDate"}
+            resp2 = requests.get(url, params=params_no_num, headers=headers, timeout=30)
+            if resp2.ok:
+                data2 = resp2.json() or {}
+                items = [c for c in (data2.get("data", []) or []) if str(c.get("number", "")).startswith(num)]
+        cards: List[Dict] = []
+        for c in items:
+            try:
+                set_obj = c.get("set", {}) or {}
+                set_name = set_obj.get("name", "")
+                set_code = set_obj.get("id", "")
+                released = set_obj.get("releaseDate", "")
+                year = (str(released)[:4] if released else "")
+                imgs = (c.get("images") or {})
+                img_url = imgs.get("small") or imgs.get("large") or ""
+                # Prefer tcgplayer url when available for a public-facing link
+                link = ( (c.get("tcgplayer") or {}).get("url")
+                         or (c.get("cardmarket") or {}).get("url")
+                         or f"https://pokemontcg.io/card/{c.get('id','')}")
+                # TCGPlayer prices structure: normal/holofoil/etc -> { low, mid, market }
+                prices = ((c.get("tcgplayer") or {}).get("prices") or {})
+                # Choose prices; collect low/mid/market
+                def _pluck_market(pr: Dict) -> float:
+                    try:
+                        return float((pr or {}).get("market") or 0)
+                    except Exception:
+                        return 0.0
+                def _pluck_low(pr: Dict) -> float:
+                    try:
+                        return float((pr or {}).get("low") or 0)
+                    except Exception:
+                        return 0.0
+                def _pluck_mid(pr: Dict) -> float:
+                    try:
+                        return float((pr or {}).get("mid") or 0)
+                    except Exception:
+                        return 0.0
+                market_price = 0.0
+                prices_map = {}
+                for k in [
+                    "normal",
+                    "holofoil",
+                    "reverseHolofoil",
+                    "1stEditionHolofoil",
+                    "1stEdition",
+                    "unlimited",
+                    "unlimitedHolofoil",
+                ]:
+                    p = prices.get(k) or {}
+                    low_v = _pluck_low(p)
+                    mid_v = _pluck_mid(p)
+                    mkt_v = _pluck_market(p)
+                    if any([low_v, mid_v, mkt_v]):
+                        prices_map[k] = {"low": low_v, "mid": mid_v, "market": mkt_v}
+                        market_price = mkt_v or market_price
+                card = {
+                    "game": "Pokémon",
+                    "name": c.get("name", ""),
+                    "set": set_name,
+                    "set_code": set_code,
+                    "year": year,
+                    "card_number": c.get("number", ""),
+                    "image_url": img_url,
+                    "link": link,
+                    "price_usd": market_price,
+                    "quantity": 1,
+                    "variety": "",
+                    "prices_map": prices_map,
+                    "source": "Pokémon TCG"
+                }
+                # Fallback persistence: store full raw card and set objects
+                try:
+                    if st.session_state.get("fallback_enabled", True):
+                        store_pokemon_card(c)
+                        if set_obj:
+                            store_pokemon_set(set_obj)
+                except Exception:
+                    pass
+                cards.append(card)
+            except Exception:
+                continue
+        return cards, len(cards), len(items), "Pokémon TCG"
+    except Exception as e:
+        return [], 0, 0, f"Pokémon TCG Error: {str(e)}"
+
+def render_pokemon_search_results(cards: List[Dict]):
+    """Render Pokémon search results with image, details, price, and actions."""
+    if not cards:
+        st.info("No results to display.")
+        return
+    try:
+        st.session_state["pkmn_last_results"] = cards
+        st.session_state["pkmn_results_visible"] = True
+    except Exception:
+        pass
+    # View controls (defaults tuned for larger images)
+    vc1, vc2 = st.columns(2)
+    with vc1:
+        cols_per_row = st.slider("Cards per Row", 1, 6, value=4, key="pkmn_cards_per_row")
+    with vc2:
+        image_width = st.slider("Image Width", 120, 500, value=280, key="pkmn_image_width")
+    for i, card in enumerate(cards):
+        if i % cols_per_row == 0:
+            row = st.columns(cols_per_row)
+        with row[i % cols_per_row]:
+            with st.container(border=True):
+                # Top row: Image (left) and Meta (right)
+                top_l, top_r = st.columns([2,3])
+                with top_l:
+                    if card.get('image_url'):
+                        st.image(card['image_url'], width=image_width)
+                with top_r:
+                    st.markdown(f"**{card.get('name','')}**")
+                    set_code = (card.get('set_code') or '').upper()
+                    set_line = f"[{set_code}] {card.get('set','')}" if set_code else f"{card.get('set','')}"
+                    st.caption(f"Set: {set_line}  •  No. {card.get('card_number','')}  •  {card.get('year','')}")
+                    if isinstance(card.get('price_usd'), (int,float)) and card.get('price_usd'):
+                        st.write(f"Market: ${float(card.get('price_usd')):.2f}")
+                    if card.get('link'):
+                        st.link_button("Open", card['link'])
+
+                # Variants (checkbox + qty) directly below image/meta
+                prices_src = card.get('prices_map') or {}
+                fmap = {
+                    'normal': ('Normal', prices_src.get('normal')),
+                    'unlimited': ('Unlimited', prices_src.get('unlimited')),
+                    'holo': ('Holo', prices_src.get('holofoil')),
+                    'unlimited_holo': ('Unlimited Holo', prices_src.get('unlimitedHolofoil')),
+                    'reverse_holo': ('Reverse Holo', prices_src.get('reverseHolofoil')),
+                    '1st_edition_holo': ('1st Edition Holo', prices_src.get('1stEditionHolofoil')),
+                    '1st_edition': ('1st Edition', prices_src.get('1stEdition'))
+                }
+                def _hasv(v):
+                    try:
+                        if not isinstance(v, dict):
+                            return v is not None and float(v) > 0
+                        return any(float(v.get(k) or 0) > 0 for k in ("market","mid","low"))
+                    except Exception:
+                        return False
+
+                with st.form(f"pk_form_{i}"):
+                    # Build rows for each available variant
+                    checks = {}
+                    qtys = {}
+                    for key, (label, val) in fmap.items():
+                        if _hasv(val):
+                            c1, c2, c3 = st.columns([4,1,2])
+                            with c1:
+                                default_on = True if (key == 'normal') else False
+                                if isinstance(val, dict):
+                                    mkt = float(val.get('market') or 0)
+                                    mid = float(val.get('mid') or 0)
+                                    low = float(val.get('low') or 0)
+                                    price_line = f"${mkt:.2f}"
+                                    details = []
+                                    if mid: details.append(f"mid ${mid:.2f}")
+                                    if low: details.append(f"low ${low:.2f}")
+                                    if details:
+                                        price_line = f"{price_line} ({', '.join(details)})"
+                                    checks[key] = st.checkbox(f"{label} — {price_line}", value=default_on, key=f"pk_{key}_ck_{i}")
+                                else:
+                                    checks[key] = st.checkbox(f"{label} — ${float(val):.2f}", value=default_on, key=f"pk_{key}_ck_{i}")
+                            with c2:
+                                st.markdown("QTY")
+                            with c3:
+                                qtys[key] = st.number_input(" ", min_value=1, max_value=999, value=1, key=f"pk_{key}_qty_{i}", label_visibility='collapsed')
+
+                    # Extra / Notes (now also holds Custom Variant)
+                    with st.expander("Extra / Notes", expanded=False):
+                        # Custom variant
+                        cv1, cv2 = st.columns([2,2])
+                        with cv1:
+                            custom_variant = st.text_input("Custom Variant", value="", key=f"pk_cust_var_{i}", placeholder="e.g., Promo")
+                        with cv2:
+                            try:
+                                custom_price = st.number_input("Custom Price (market)", min_value=0.0, step=0.01, value=0.0, key=f"pk_cust_price_{i}")
+                            except Exception:
+                                custom_price = 0.0
+                        # Notes / flags
+                        s_col1, s_col2 = st.columns([2,3])
+                        with s_col1: signed_on = st.checkbox("Signed", value=False, key=f"pk_{i}_signed")
+                        with s_col2: signed_txt = st.text_input("Artist / note", value="", key=f"pk_{i}_signed_txt", placeholder="Artist or note")
+                        a_col1, a_col2 = st.columns([2,3])
+                        with a_col1: altered_on = st.checkbox("Altered", value=False, key=f"pk_{i}_altered")
+                        with a_col2: altered_txt = st.text_input("Artist / note", value="", key=f"pk_{i}_altered_txt", placeholder="Artist or note")
+                        n_col1, n_col2 = st.columns([2,3])
+                        with n_col1: notes_on = st.checkbox("Notes", value=False, key=f"pk_{i}_notes")
+                        with n_col2: notes_txt = st.text_input("Notes", value="", key=f"pk_{i}_notes_txt", placeholder="Any notes")
+                        paid_input = st.number_input("Paid (total)", min_value=0.0, step=0.01, value=0.0, key=f"pk_{i}_paid")
+                        target_price_input = st.number_input("Target Price (watchlist)", min_value=0.0, step=0.01, value=0.0, key=f"pk_{i}_target_price")
+
+                    # Actions under Extra/Notes
+                    ac1, ac2 = st.columns(2)
+                    with ac1:
+                        submitted_add = st.form_submit_button("Add to Collection", use_container_width=True)
+                    with ac2:
+                        submitted_wl = st.form_submit_button("Add to Watchlist", use_container_width=True)
+
+                        def _to_float_safe(x):
+                            try:
+                                return float(x)
+                            except Exception:
+                                try:
+                                    return float(str(x).replace('$','').replace(',',''))
+                                except Exception:
+                                    return 0.0
+
+                        if submitted_add or submitted_wl:
+                            # Build variant selections
+                            picks = []
+                            for key, (label, val) in fmap.items():
+                                if _hasv(val) and checks.get(key):
+                                    # prefer market for price when dict provided
+                                    price_val = 0.0
+                                    if isinstance(val, dict):
+                                        price_val = _to_float_safe(val.get('market'))
+                                    else:
+                                        price_val = _to_float_safe(val)
+                                    picks.append((key, price_val, int(qtys.get(key, 1))))
+                            if (custom_variant or '').strip() and _to_float_safe(custom_price) > 0:
+                                picks.append((custom_variant.strip(), _to_float_safe(custom_price), 1))
+
+                            if not picks:
+                                st.warning("Select at least one variant to add.")
+                            else:
+                                if submitted_add:
+                                    collection = st.session_state.get(SESSION_KEYS["collection"], [])
+                                    before = len(collection)
+                                    for vname, vprice, vqty in picks:
+                                        entry = card.copy()
+                                        entry['game'] = 'Pokémon'
+                                        entry['variant'] = vname
+                                        entry['price_usd'] = vprice
+                                        entry['quantity'] = vqty
+                                        entry['date_added'] = datetime.now().isoformat()
+                                        if signed_on: entry['signed'] = (signed_txt or '').strip()
+                                        if altered_on: entry['altered'] = (altered_txt or '').strip()
+                                        if notes_on and (notes_txt or '').strip(): entry['notes'] = (notes_txt or '').strip()
+                                        try: entry['paid'] = float(paid_input or 0.0)
+                                        except Exception: entry['paid'] = 0.0
+                                        # Merge or append
+                                        dup_strategy = st.session_state.get('duplicate_strategy', 'merge')
+                                        merged = False
+                                        if dup_strategy == 'merge':
+                                            for existing in collection:
+                                                if (
+                                                    existing.get('game') == entry.get('game') and
+                                                    existing.get('name') == entry.get('name') and
+                                                    (existing.get('set_code') or existing.get('set')) == (entry.get('set_code') or entry.get('set')) and
+                                                    str(existing.get('card_number','')) == str(entry.get('card_number','')) and
+                                                    existing.get('variant','') == entry.get('variant','')
+                                                ):
+                                                    try:
+                                                        existing['quantity'] = int(existing.get('quantity', 0) or 0) + int(entry.get('quantity', 0) or 0)
+                                                        existing['paid'] = float(existing.get('paid', 0.0) or 0.0) + float(entry.get('paid', 0.0) or 0.0)
+                                                    except Exception:
+                                                        pass
+                                                    merged = True
+                                                    break
+                                        if not merged or dup_strategy != 'merge':
+                                            collection.append(entry)
+                                    st.session_state[SESSION_KEYS['collection']] = collection
+                                    # Persist Pokémon-only file
+                                    pkmn_cards = [c for c in collection if c.get('game') == 'Pokémon']
+                                    if pkmn_cards:
+                                        save_collection_to_csv(pkmn_cards, 'pokemon_collection.csv')
+                                    try:
+                                        st.toast(f"Added {len(picks)} entr{'y' if len(picks)==1 else 'ies'} to collection", icon="✅")
+                                    except Exception:
+                                        st.success("Added to collection")
+                                if submitted_wl:
+                                    watchlist = st.session_state.get('watchlist', [])
+                                    for vname, vprice, vqty in picks:
+                                        wentry = card.copy()
+                                        wentry['game'] = 'Pokémon'
+                                        wentry['variant'] = vname
+                                        wentry['price_usd'] = vprice
+                                        wentry['quantity'] = vqty
+                                        wentry['date_added'] = datetime.now().isoformat()
+                                        if signed_on: wentry['signed'] = (signed_txt or '').strip()
+                                        if altered_on: wentry['altered'] = (altered_txt or '').strip()
+                                        if notes_on and (notes_txt or '').strip(): wentry['notes'] = (notes_txt or '').strip()
+                                        tp = 0.0
+                                        try: tp = float(target_price_input or 0.0)
+                                        except Exception: tp = 0.0
+                                        wentry['target_price'] = tp
+                                        # Merge by same key
+                                        wmerged = False
+                                        for existing in watchlist:
+                                            if (
+                                                existing.get('game') == wentry.get('game') and
+                                                existing.get('name') == wentry.get('name') and
+                                                (existing.get('set_code') or existing.get('set')) == (wentry.get('set_code') or wentry.get('set')) and
+                                                str(existing.get('card_number','')) == str(wentry.get('card_number','')) and
+                                                existing.get('variant','') == wentry.get('variant','')
+                                            ):
+                                                try:
+                                                    existing['quantity'] = int(existing.get('quantity', 0) or 0) + int(wentry.get('quantity', 0) or 0)
+                                                    if tp > 0: existing['target_price'] = tp
+                                                except Exception:
+                                                    pass
+                                                wmerged = True
+                                                break
+                                        if not wmerged:
+                                            watchlist.append(wentry)
+                                    st.session_state['watchlist'] = watchlist
+                                    save_watchlist_to_csv(watchlist, 'watchlist.csv')
+                                    try:
+                                        st.toast(f"Added {len(picks)} entr{'y' if len(picks)==1 else 'ies'} to watchlist", icon="⭐")
+                                    except Exception:
+                                        st.success("Added to watchlist")
 
 def render_mtg_search_results(cards: List[Dict]):
     """Render MTG search results with image, details, price, variant selectors, and actions."""
@@ -1641,7 +2011,12 @@ def render_help_view():
             return s.getvalue().encode('utf-8')
         # Targeted import templates only
         mtg_import_headers = ['name','set','set_code','card_number','quantity','foil','paid','signed','altered','notes']
-        pkmn_import_headers = ['name','set','card_number','quantity','paid','signed','altered','notes']
+        # Pokémon-specific template with variant flags and minimal required fields
+        pkmn_import_headers = [
+            'name','number','quantity',
+            'normal','unlimited','holofoil','unlimited_holofoil','reverse_holofoil','first_edition','first_edition_holo',
+            'notes'
+        ]
         wl_import_headers = ['name','set','quantity','target_price','notes']
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -1650,6 +2025,16 @@ def render_help_view():
             st.download_button("Pokémon Import Template", data=_tmpl_bytes(pkmn_import_headers), file_name="pokemon_import_template.csv", mime="text/csv")
         with c3:
             st.download_button("Watchlist Import Template", data=_tmpl_bytes(wl_import_headers), file_name="watchlist_import_template.csv", mime="text/csv")
+        st.markdown("""
+        **Template Guide**
+        - **Quantity**: if blank or missing, defaults to 1.
+        - **Pokémon variant flags** (normal, unlimited, holofoil, unlimited_holofoil, reverse_holofoil, first_edition, first_edition_holo):
+          - Accepts any of: y, yes, true, 1 (case-insensitive) to mark a variant.
+          - If none are set, the import defaults to Normal.
+          - If multiple variants are set on the same row, multiple entries will be created (one per variant), each using the same quantity.
+        - **Number field**: Pokémon accepts `number` as the card number column; MTG uses `card_number`/`collector_number`.
+        - **Ambiguities**: If the same name+number exists in multiple sets, the row is queued for review after the import completes.
+        """)
     with tabs[3]:
         st.subheader("Collection")
         st.markdown("""
@@ -1688,6 +2073,273 @@ def render_import_export_tab():
     # Show last import summary after reruns
     if st.session_state.get('last_import_summary'):
         st.info(st.session_state.get('last_import_summary'))
+    # Load persisted ambiguities for this owner if present and not already in session
+    try:
+        owner_id = _sanitize_owner_id(owner_label or '')
+        amb_path = os.path.join(get_collections_dir(), f"{owner_id}-import-ambiguities.json")
+        if not st.session_state.get('import_ambiguities') and os.path.exists(amb_path):
+            with open(amb_path, 'r', encoding='utf-8') as f:
+                st.session_state['import_ambiguities'] = json.load(f) or []
+    except Exception:
+        pass
+    # Ambiguity Review panel (if present from a prior import)
+    if st.session_state.get('import_ambiguities'):
+        amb = st.session_state.get('import_ambiguities') or []
+        st.warning(f"{len(amb)} ambiguous row(s) require your review.")
+        st.subheader("Ambiguity Review")
+        to_remove = []
+        # Batch resolve button (top)
+        if amb:
+            if st.button("Resolve All Selected", key="amb_resolve_all"):
+                committed = 0
+                for idx in range(len(amb)):
+                    try:
+                        item = amb[idx]
+                        cands = item.get('candidates') or []
+                        if not cands:
+                            continue
+                        sel_idx = st.session_state.get(f"amb_sel_{idx}")
+                        if sel_idx is None:
+                            continue
+                        qty = int(st.session_state.get(f"amb_qty_{idx}") or int(item.get('quantity') or 1))
+                        variant = item.get('variant') or 'Normal'
+                        sel = cands[sel_idx]
+                        entry = {
+                            'game': item.get('game',''),
+                            'name': sel.get('name') or item.get('name',''),
+                            'set': sel.get('set',''),
+                            'set_code': sel.get('set_code',''),
+                            'card_number': sel.get('card_number',''),
+                            'year': sel.get('year',''),
+                            'image_url': sel.get('image_url',''),
+                            'link': sel.get('link',''),
+                            'price_usd': sel.get('price_usd', 0.0),
+                            'price_usd_foil': sel.get('price_usd_foil', 0.0),
+                            'price_usd_etched': sel.get('price_usd_etched', 0.0),
+                            'quantity': int(qty or 1),
+                            'variant': variant or 'Normal',
+                            'paid': 0.0,
+                            'signed': '',
+                            'altered': '',
+                            'notes': item.get('notes',''),
+                            'date_added': datetime.now().isoformat()
+                        }
+                        dest_file = 'mtg_collection.csv' if entry['game'] == 'Magic: The Gathering' else 'pokemon_collection.csv'
+                        current = load_csv_collections()
+                        # Merge behavior respects duplicate strategy: default merge quantities
+                        def _k(c):
+                            kset = c.get('set_code') or c.get('set','')
+                            return (c.get('game',''), c.get('name',''), kset, str(c.get('card_number','')), c.get('variant',''))
+                        game_only = [c for c in current if c.get('game') == entry['game']]
+                        acc = {_k(c): dict(c) for c in game_only}
+                        ek = _k(entry)
+                        if ek in acc:
+                            try:
+                                acc[ek]['quantity'] = int(acc[ek].get('quantity',1) or 1) + int(entry.get('quantity',1) or 1)
+                            except Exception:
+                                pass
+                            # propagate enriched fields if provided
+                            for f in ['set','set_code','year','link','image_url','price_usd','price_usd_foil','price_usd_etched','date_added']:
+                                if entry.get(f):
+                                    acc[ek][f] = entry.get(f)
+                            # sum paid (entry is 0.0 here, but keep logic consistent)
+                            try:
+                                acc[ek]['paid'] = float(acc[ek].get('paid',0.0) or 0.0) + float(entry.get('paid',0.0) or 0.0)
+                            except Exception:
+                                pass
+                        else:
+                            acc[ek] = dict(entry)
+                        merged_game = list(acc.values())
+                        save_collection_to_csv(merged_game, dest_file)
+                        to_remove.append(idx)
+                        committed += 1
+                    except Exception:
+                        continue
+                # Remove processed and persist queue
+                if to_remove:
+                    new_amb = [x for i, x in enumerate(amb) if i not in to_remove]
+                    st.session_state['import_ambiguities'] = new_amb
+                    try:
+                        with open(amb_path, 'w', encoding='utf-8') as f:
+                            json.dump(new_amb, f, ensure_ascii=False, indent=2)
+                    except Exception:
+                        pass
+                try:
+                    # Refresh in-memory collections and notify
+                    st.session_state[SESSION_KEYS['collection']] = load_csv_collections()
+                except Exception:
+                    pass
+                try:
+                    st.toast(f"Resolved {committed} item(s).", icon="✅")
+                except Exception:
+                    st.success(f"Resolved {committed} item(s).")
+                st.rerun()
+        for idx, item in enumerate(amb):
+            with st.expander(f"{item.get('game','')} — {item.get('name','')} (No. {item.get('number','')})", expanded=False):
+                cands = item.get('candidates') or []
+                if not cands:
+                    st.info("No candidates attached.")
+                    continue
+                # Grid with images and an exclusive selector under each image
+                try:
+                    selected_idx = int(st.session_state.get(f"amb_sel_{idx}") or 0)
+                except Exception:
+                    selected_idx = 0
+                try:
+                    ncols = max(1, min(6, len(cands)))
+                    rows = (len(cands) + ncols - 1) // ncols
+                    for r in range(rows):
+                        try:
+                            cols = st.columns(ncols, gap="small")
+                        except Exception:
+                            cols = st.columns(ncols)
+                        for ci in range(ncols):
+                            j = r * ncols + ci
+                            if j >= len(cands):
+                                continue
+                            with cols[ci]:
+                                cnd = cands[j]
+                                img = cnd.get('image_url')
+                                if img:
+                                    st.image(img, width=220)
+                                sc = (cnd.get('set_code') or '').upper()
+                                name_line = cnd.get('name','') or item.get('name','')
+                                meta = f"[{sc}] {cnd.get('set','')} • No. {cnd.get('card_number','')}"
+                                row = st.columns([2,6])
+                                with row[0]:
+                                    # radio-like exclusive selector via button
+                                    is_sel = (j == selected_idx)
+                                    if is_sel:
+                                        st.button("Selected", key=f"amb_pick_{idx}_{j}", disabled=True)
+                                    else:
+                                        if st.button("Select", key=f"amb_pick_{idx}_{j}"):
+                                            st.session_state[f"amb_sel_{idx}"] = j
+                                            st.rerun()
+                                with row[1]:
+                                    if j == selected_idx:
+                                        st.markdown(f"**{name_line}**")
+                                    else:
+                                        st.markdown(name_line)
+                                    st.markdown(f"<div style='font-size:0.85rem;color:#999;margin-top:2px'>{meta}</div>", unsafe_allow_html=True)
+                                # exclusive behavior handled by button above
+                except Exception:
+                    pass
+                # Resolve current choice from session
+                try:
+                    choice = int(st.session_state.get(f"amb_sel_{idx}") or 0)
+                except Exception:
+                    choice = 0
+                vcol1, vcol2 = st.columns([1,3])
+                with vcol1:
+                    qty = st.number_input("Quantity", min_value=1, max_value=999, value=int(item.get('quantity') or 1), key=f"amb_qty_{idx}")
+                with vcol2:
+                    st.write("")
+                act_l, act_r = st.columns([3,1])
+                if act_l.button("Import Selected", key=f"amb_btn_{idx}"):
+                    sel = cands[choice]
+                    entry = {
+                        'game': item.get('game',''),
+                        'name': sel.get('name') or item.get('name',''),
+                        'set': sel.get('set',''),
+                        'set_code': sel.get('set_code',''),
+                        'card_number': sel.get('card_number',''),
+                        'year': sel.get('year',''),
+                        'image_url': sel.get('image_url',''),
+                        'link': sel.get('link',''),
+                        'price_usd': sel.get('price_usd', 0.0),
+                        'price_usd_foil': sel.get('price_usd_foil', 0.0),
+                        'price_usd_etched': sel.get('price_usd_etched', 0.0),
+                        'quantity': int(qty or 1),
+                        'variant': item.get('variant') or 'Normal',
+                        'paid': 0.0,
+                        'signed': '',
+                        'altered': '',
+                        'notes': item.get('notes',''),
+                        'date_added': datetime.now().isoformat()
+                    }
+                    # Append to collection CSV for the correct game
+                    dest_file = 'mtg_collection.csv' if entry['game'] == 'Magic: The Gathering' else 'pokemon_collection.csv'
+                    current = load_csv_collections()
+                    def _k(c):
+                        kset = c.get('set_code') or c.get('set','')
+                        return (c.get('game',''), c.get('name',''), kset, str(c.get('card_number','')), c.get('variant',''))
+                    game_only = [c for c in current if c.get('game') == entry['game']]
+                    acc = {_k(c): dict(c) for c in game_only}
+                    ek = _k(entry)
+                    if ek in acc:
+                        try:
+                            acc[ek]['quantity'] = int(acc[ek].get('quantity',1) or 1) + int(entry.get('quantity',1) or 1)
+                        except Exception:
+                            pass
+                        for f in ['set','set_code','year','link','image_url','price_usd','price_usd_foil','price_usd_etched','date_added']:
+                            if entry.get(f):
+                                acc[ek][f] = entry.get(f)
+                        try:
+                            acc[ek]['paid'] = float(acc[ek].get('paid',0.0) or 0.0) + float(entry.get('paid',0.0) or 0.0)
+                        except Exception:
+                            pass
+                    else:
+                        acc[ek] = dict(entry)
+                    merged_game = list(acc.values())
+                    save_collection_to_csv(merged_game, dest_file)
+                    to_remove.append(idx)
+                    try:
+                        st.toast("Imported selection.", icon="✅")
+                    except Exception:
+                        st.success("Imported selection.")
+                    try:
+                        st.session_state[SESSION_KEYS['collection']] = load_csv_collections()
+                    except Exception:
+                        pass
+                    # Immediately drop this ambiguity from queue and persist
+                    try:
+                        amb_now = st.session_state.get('import_ambiguities') or []
+                        new_amb = [x for i, x in enumerate(amb_now) if i != idx]
+                        st.session_state['import_ambiguities'] = new_amb
+                        if new_amb:
+                            with open(amb_path, 'w', encoding='utf-8') as f:
+                                json.dump(new_amb, f, ensure_ascii=False, indent=2)
+                        else:
+                            if os.path.exists(amb_path):
+                                os.remove(amb_path)
+                    except Exception:
+                        pass
+                    st.rerun()
+                # Disregard option to drop this ambiguous row without importing (right side)
+                if act_r.button("Disregard", key=f"amb_disregard_{idx}"):
+                    to_remove.append(idx)
+                    # Persist and refresh immediately
+                    new_amb = [x for i, x in enumerate(st.session_state.get('import_ambiguities') or []) if i != idx]
+                    st.session_state['import_ambiguities'] = new_amb
+                    try:
+                        if new_amb:
+                            with open(amb_path, 'w', encoding='utf-8') as f:
+                                json.dump(new_amb, f, ensure_ascii=False, indent=2)
+                        else:
+                            if os.path.exists(amb_path):
+                                os.remove(amb_path)
+                    except Exception:
+                        pass
+                    st.rerun()
+        if to_remove:
+            # Remove processed items by index
+            new_amb = [x for i, x in enumerate(amb) if i not in to_remove]
+            st.session_state['import_ambiguities'] = new_amb
+            # Persist updated queue to disk (or delete file if empty)
+            try:
+                if new_amb:
+                    with open(amb_path, 'w', encoding='utf-8') as f:
+                        json.dump(new_amb, f, ensure_ascii=False, indent=2)
+                else:
+                    if os.path.exists(amb_path):
+                        os.remove(amb_path)
+            except Exception:
+                pass
+            if not new_amb:
+                try:
+                    st.toast("All ambiguities resolved.", icon="🎉")
+                except Exception:
+                    st.success("All ambiguities resolved.")
     up = st.file_uploader("Choose a CSV file", type=["csv"], key="import_csv_top")
     # Persist uploaded file bytes to survive reruns triggered by button clicks
     if up is not None:
@@ -1774,184 +2426,151 @@ def render_import_export_tab():
                 coll = [] if mode == "Replace" else load_csv_collections()
                 incoming = []
                 target_game = 'Magic: The Gathering' if target == 'MTG Collection' else 'Pokémon'
+                def _truthy(v: Any) -> bool:
+                    try:
+                        s = str(v or '').strip().lower()
+                        return s in ('y','yes','true','1')
+                    except Exception:
+                        return False
                 for row in rows:
                     # Force game to selected target to ensure correct filtering
                     row_game = target_game
-                    incoming.append({
+                    # Common fields
+                    base = {
                         'game': row_game,
                         'name': row.get('name',''),
                         'set': row.get('set','') or row.get('set_code',''),
                         'set_code': (row.get('set_code','') or '').lower(),
-                        'card_number': row.get('card_number','') or row.get('collector_number',''),
                         'year': row.get('year',''),
                         'link': row.get('link',''),
                         'image_url': row.get('image_url',''),
                         'price_usd': nfloat(row.get('price_usd',0)),
                         'price_usd_foil': nfloat(row.get('price_usd_foil',0)),
                         'price_usd_etched': nfloat(row.get('price_usd_etched',0)),
-                        'quantity': nint(row.get('quantity',1),1),
-                        'variant': row.get('variant',''),
                         'paid': nfloat(row.get('paid',0.0)),
                         'signed': row.get('signed',''),
                         'altered': row.get('altered',''),
                         'notes': row.get('notes',''),
                         'date_added': row.get('timestamp','') or row.get('date_added','')
-                    })
-
-                # Optional enrichment via Scryfall for MTG rows
-                if target == "MTG Collection" and enrich_scry and st.session_state.get("scryfall_enabled", True):
-                    enriched = 0
-                    # Progress bar for enrichment
-                    total_mtg = max(1, sum(1 for _r in incoming if _r.get('game') == 'Magic: The Gathering'))
-                    prog = st.progress(0, text="Contacting Scryfall…")
-                    with st.spinner("Fetching MTG details from Scryfall..."):
-                        for idx, r in enumerate(incoming):
-                            if r.get('game') != 'Magic: The Gathering':
-                                continue
-                            q_name = (r.get('name') or '').strip()
-                            set_hint = (r.get('set') or '').strip()
-                            scode = (r.get('set_code') or '').strip().lower()
-                            # If we have a set code, use Scryfall qualifier s:code for precise matches
-                            if scode:
-                                set_hint_query = f"s:{scode}"
-                            else:
-                                # if set looks like a short uppercase code, treat it as code
-                                _sh = set_hint.strip()
-                                if _sh and len(_sh) <= 5 and _sh.upper() == _sh:
-                                    set_hint_query = f"s:{_sh.lower()}"
-                                else:
-                                    set_hint_query = set_hint
-                            collector_number = str(r.get('card_number') or '').strip()
-                            if not q_name:
-                                # update progress even if skipped
-                                try:
-                                    prog.progress(min((idx+1)/total_mtg, 1.0))
-                                except Exception:
-                                    pass
-                                continue
-                            try:
-                                # Attempt 1: use set hint/query if available
-                                cards_sf, total_sf, _, _ = search_mtg_scryfall(q_name, set_hint=set_hint_query, collector_number=collector_number)
-                                if not cards_sf:
-                                    # Attempt 2: retry without set hint
-                                    try:
-                                        print(f"🔁 Scryfall retry without set hint for '{q_name}' (code='{scode}', num='{collector_number}')")
-                                    except Exception:
-                                        pass
-                                    cards_sf, total_sf, _, _ = search_mtg_scryfall(q_name, set_hint="", collector_number=collector_number)
-                                if cards_sf:
-                                    # choose best match: prefer same set_code or set name and same collector_number
-                                    best = None
-                                    for c in cards_sf:
-                                        ok = True
-                                        # prefer exact set code when provided
-                                        if scode:
-                                            if (c.get('set_code') or '').lower() != scode:
-                                                ok = False
-                                        elif set_hint:
-                                            if c.get('set') != set_hint and (c.get('set_code') or '').lower() != (set_hint or '').lower():
-                                                ok = False
-                                        if collector_number and str(c.get('card_number','')).strip() != collector_number:
-                                            # still allow if not provided or mismatch, but lower priority
-                                            pass
-                                        if ok:
-                                            best = c
-                                            break
-                                    if not best:
-                                        best = cards_sf[0]
-                                    # Fetch full raw Scryfall object for fallback writing
-                                    raw_best = None
-                                    try:
-                                        import requests as _req
-                                        # Build raw API query mirroring search with precise qualifiers
-                                        qparts = [q_name]
-                                        if scode:
-                                            qparts.append(f"s:{scode}")
-                                        if collector_number:
-                                            qparts.append(f"cn:{collector_number}")
-                                        q = " ".join(qparts)
-                                        resp = _req.get("https://api.scryfall.com/cards/search", params={"q": q, "order": "released", "unique": "prints"}, timeout=30)
-                                        if resp.status_code != 404:
-                                            resp.raise_for_status()
-                                            data_raw = resp.json()
-                                            items_raw = data_raw.get("data", [])
-                                            # choose best from raw
-                                            for cr in items_raw:
-                                                if scode and (cr.get('set','').lower() != scode):
-                                                    continue
-                                                if collector_number and str(cr.get('collector_number','')).strip() != collector_number:
-                                                    continue
-                                                raw_best = cr
-                                                break
-                                            if not raw_best and items_raw:
-                                                raw_best = items_raw[0]
-                                    except Exception as _er:
-                                        try:
-                                            print(f"⚠️ Scryfall raw fetch failed: {_er}")
-                                        except Exception:
-                                            pass
-                                    # debug first few
-                                    try:
-                                        if idx < 3:
-                                            print(f"✨ Enriched '{q_name}' -> set={best.get('set')} code={best.get('set_code')} cn={best.get('card_number')}")
-                                    except Exception:
-                                        pass
-                                    # apply fields (overwrite to ensure enrichment is captured)
-                                    src_obj = raw_best or best
-                                    r['set'] = (src_obj.get('set_name') if raw_best else best.get('set')) or r.get('set') or ''
-                                    try:
-                                        r['set_code'] = ((src_obj.get('set') if raw_best else best.get('set_code')) or r.get('set_code','') or '').lower()
-                                    except Exception:
-                                        r['set_code'] = (src_obj.get('set') if raw_best else best.get('set_code')) or r.get('set_code','')
-                                    # derive year from raw release date if available
-                                    if raw_best and src_obj.get('released_at'):
-                                        import re as _re
-                                        m4 = _re.search(r"(19\d{2}|20\d{2})", str(src_obj.get('released_at')))
-                                        r['year'] = (m4.group(1) if m4 else r.get('year') or '')
-                                    else:
-                                        r['year'] = best.get('year') or r.get('year') or ''
-                                    # prefer raw image_uris.normal if available
-                                    if raw_best and (src_obj.get('image_uris') or {}):
-                                        r['image_url'] = (src_obj.get('image_uris') or {}).get('normal') or r.get('image_url') or ''
-                                    else:
-                                        r['image_url'] = best.get('image_url') or r.get('image_url') or ''
-                                    r['link'] = (src_obj.get('scryfall_uri') if raw_best else best.get('link')) or r.get('link') or ''
-                                    # overwrite prices with Scryfall values when present
-                                    if raw_best and src_obj.get('prices'):
-                                        pr = src_obj.get('prices') or {}
-                                        r['price_usd'] = pr.get('usd') or r.get('price_usd', 0.0)
-                                        r['price_usd_foil'] = pr.get('usd_foil') or r.get('price_usd_foil', 0.0)
-                                        r['price_usd_etched'] = pr.get('usd_etched') or r.get('price_usd_etched', 0.0)
-                                    else:
-                                        r['price_usd'] = best.get('price_usd', r.get('price_usd', 0.0))
-                                        r['price_usd_foil'] = best.get('price_usd_foil', r.get('price_usd_foil', 0.0))
-                                        r['price_usd_etched'] = best.get('price_usd_etched', r.get('price_usd_etched', 0.0))
-                                    # persist to fallback for offline use
-                                    try:
-                                        if raw_best:
-                                            store_mtg_card(raw_best)
-                                        else:
-                                            store_mtg_card(best)
-                                    except Exception as _e:
-                                        try:
-                                            print(f"⚠️ fallback store_mtg_card failed: {_e}")
-                                        except Exception:
-                                            pass
-                                    enriched += 1
-                            except Exception:
-                                continue
-                            finally:
-                                try:
-                                    prog.progress(min((idx+1)/total_mtg, 1.0))
-                                except Exception:
-                                    pass
-                    if enriched == 0:
-                        st.warning("No rows were enriched from Scryfall. Check names/set codes/collector numbers.")
+                    }
+                    qty = nint(row.get('quantity',1),1) or 1
+                    if row_game == 'Pokémon':
+                        # Support 'number' as alias for card number
+                        card_no = row.get('card_number','') or row.get('number','')
+                        # Build entries from variant flags; default to Normal if none selected
+                        variants_map = {
+                            'normal': _truthy(row.get('normal')),
+                            'unlimited': _truthy(row.get('unlimited')),
+                            'holofoil': _truthy(row.get('holofoil') or row.get('holo')),
+                            'unlimited_holofoil': _truthy(row.get('unlimited_holofoil') or row.get('unlimited_holo')),
+                            'reverse_holofoil': _truthy(row.get('reverse_holofoil') or row.get('reverse_holo')),
+                            'first_edition': _truthy(row.get('first_edition') or row.get('1stEdition')),
+                            'first_edition_holo': _truthy(row.get('first_edition_holo') or row.get('1stEditionHolofoil')),
+                        }
+                        selected = [k for k,v in variants_map.items() if v]
+                        if not selected:
+                            selected = ['normal']
+                        for vname in selected:
+                            entry = dict(base)
+                            entry.update({
+                                'set': base.get('set',''),
+                                'set_code': base.get('set_code',''),
+                                'card_number': card_no,
+                                'quantity': qty,
+                                'variant': vname.replace('_', ' ').title() if vname != 'holofoil' else 'Holo',
+                            })
+                            incoming.append(entry)
                     else:
+                        # MTG unchanged; accept provided card_number/collector_number and variant/foil
+                        entry = dict(base)
+                        entry.update({
+                            'set': base.get('set',''),
+                            'set_code': base.get('set_code',''),
+                            'card_number': row.get('card_number','') or row.get('collector_number',''),
+                            'quantity': qty,
+                            'variant': row.get('variant',''),
+                        })
+                        incoming.append(entry)
+
+                # Resolve rows by provider to auto-import or queue ambiguous
+                resolved: List[Dict] = []
+                ambiguities: List[Dict] = []
+                not_found = 0
+                prog2 = st.progress(0, text="Resolving rows…")
+                for idx_r, r in enumerate(incoming):
+                    g = r.get('game')
+                    nm = (r.get('name') or '').strip()
+                    num = str(r.get('card_number') or '').strip()
+                    set_hint = (r.get('set') or '').strip()
+                    if not nm:
+                        continue
+                    try:
+                        cand_cards: List[Dict] = []
+                        if g == 'Pokémon':
+                            cards, shown, total, _ = search_pokemon_tcg(nm, set_hint=set_hint, number=num)
+                            cand_cards = cards or []
+                        elif g == 'Magic: The Gathering':
+                            cards, shown, total, _ = search_mtg_scryfall(nm, set_hint=set_hint, collector_number=num)
+                            cand_cards = cards or []
+                        # Filter by exact or prefix number match
+                        if num:
+                            if g == 'Pokémon':
+                                cand_cards = [c for c in cand_cards if str(c.get('card_number','')).startswith(num)]
+                            else:
+                                cand_cards = [c for c in cand_cards if str(c.get('card_number','')).strip() == num]
+                        # Unique -> resolve
+                        if len(cand_cards) == 1:
+                            c = cand_cards[0]
+                            ent = dict(r)
+                            ent['set'] = c.get('set') or ent.get('set')
+                            ent['set_code'] = (c.get('set_code') or ent.get('set_code') or '').lower()
+                            ent['year'] = c.get('year') or ent.get('year')
+                            ent['image_url'] = c.get('image_url') or ent.get('image_url')
+                            ent['link'] = c.get('link') or ent.get('link')
+                            # Prefer market price if present
+                            ent['price_usd'] = c.get('price_usd', ent.get('price_usd', 0.0))
+                            # Normalize variant default
+                            if not ent.get('variant'):
+                                ent['variant'] = 'Normal'
+                            resolved.append(ent)
+                        elif len(cand_cards) > 1:
+                            # Build minimal candidate list
+                            cands = []
+                            for c in cand_cards:
+                                cands.append({
+                                    'game': g,
+                                    'name': c.get('name',''),
+                                    'set': c.get('set',''),
+                                    'set_code': (c.get('set_code') or '').lower(),
+                                    'card_number': c.get('card_number',''),
+                                    'year': c.get('year',''),
+                                    'image_url': c.get('image_url',''),
+                                    'link': c.get('link',''),
+                                    'price_usd': c.get('price_usd', 0.0),
+                                    'price_usd_foil': c.get('price_usd_foil', 0.0),
+                                    'price_usd_etched': c.get('price_usd_etched', 0.0),
+                                })
+                            ambiguities.append({
+                                'game': g,
+                                'name': nm,
+                                'number': num,
+                                'quantity': r.get('quantity', 1),
+                                'variant': r.get('variant') or 'Normal',
+                                'notes': r.get('notes',''),
+                                'candidates': cands,
+                            })
+                        else:
+                            not_found += 1
+                    except Exception:
+                        not_found += 1
+                    finally:
                         try:
-                            st.toast(f"Scryfall enrichment applied to {enriched} row(s).", icon="🧙")
+                            prog2.progress(min((idx_r+1)/max(1,len(incoming)), 1.0))
                         except Exception:
                             pass
+                prog2.empty()
+                # Use resolved entries only; ambiguities are queued for review
+                incoming_final = resolved
                 # Merge behavior on Append
                 if mode == "Append" and do_merge:
                     # key: (game, name, set_or_code, card_number, variant)
@@ -1963,7 +2582,7 @@ def render_import_export_tab():
                     for c in coll:
                         acc[_k(c)] = dict(c)
                     # fold incoming
-                    for c in incoming:
+                    for c in incoming_final:
                         k = _k(c)
                         if k in acc:
                             # sum quantities
@@ -1995,7 +2614,7 @@ def render_import_export_tab():
                             acc[k] = dict(c)
                     merged = list(acc.values())
                 else:
-                    merged = coll + incoming if mode == "Append" else incoming
+                    merged = coll + incoming_final if mode == "Append" else incoming_final
                 # Filter to specific game based on target
                 if target == "MTG Collection":
                     merged = [c for c in merged if c.get('game') == 'Magic: The Gathering']
@@ -2009,7 +2628,7 @@ def render_import_export_tab():
                         st.toast(f"Imported {len(incoming)} row(s) into MTG. New size: {len(merged)} (was {before}).", icon="✅")
                     except Exception:
                         pass
-                    st.session_state['last_import_summary'] = f"✅ MTG import complete: {len(incoming)} row(s). New size {len(merged)} (was {before})."
+                    st.session_state['last_import_summary'] = f"✅ MTG import: {len(incoming_final)} resolved • {len(ambiguities)} ambiguous • {not_found} not found. New size {len(merged)} (was {before})."
                 elif target == "Pokémon Collection":
                     merged = [c for c in merged if c.get('game') == 'Pokémon']
                     before = len([c for c in coll if c.get('game') == 'Pokémon']) if mode == "Append" else 0
@@ -2022,7 +2641,18 @@ def render_import_export_tab():
                         st.toast(f"Imported {len(incoming)} row(s) into Pokémon. New size: {len(merged)} (was {before}).", icon="✅")
                     except Exception:
                         pass
-                    st.session_state['last_import_summary'] = f"✅ Pokémon import complete: {len(incoming)} row(s). New size {len(merged)} (was {before})."
+                    st.session_state['last_import_summary'] = f"✅ Pokémon import: {len(incoming_final)} resolved • {len(ambiguities)} ambiguous • {not_found} not found. New size {len(merged)} (was {before})."
+                # Store ambiguities for review panel
+                if ambiguities:
+                    st.session_state['import_ambiguities'] = ambiguities
+                    # Persist ambiguities for this owner
+                    try:
+                        owner_id = _sanitize_owner_id(owner_label or '')
+                        amb_path = os.path.join(get_collections_dir(), f"{owner_id}-import-ambiguities.json")
+                        with open(amb_path, 'w', encoding='utf-8') as f:
+                            json.dump(ambiguities, f, ensure_ascii=False, indent=2)
+                    except Exception:
+                        pass
                 # Update session
                 st.session_state[SESSION_KEYS['collection']] = load_csv_collections()
                 st.rerun()
@@ -3109,17 +3739,28 @@ def load_sets_catalog() -> List[Dict]:
             with open(mtg_path, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    set_name = row.get('set') or row.get('name') or row.get('Name') or row.get('set_name') or row.get('Set Name') or ''
-                    released = (
-                        row.get('year') or row.get('released') or row.get('releaseDate') or row.get('release_date') or row.get('released_at') or 
-                        row.get('printed') or row.get('printedAt') or row.get('printed_at') or ''
+                    rl = { (k or '').lower(): v for k, v in row.items() }
+                    set_name = rl.get('set') or rl.get('name') or rl.get('set_name') or rl.get('set name') or ''
+                    set_code = rl.get('code') or rl.get('set_code') or rl.get('id') or ''
+                    total_cards = (
+                        rl.get('printed_size') or rl.get('printedsize') or rl.get('card_count') or rl.get('card count') or rl.get('total') or ''
                     )
+                    released = (
+                        rl.get('year') or rl.get('released') or rl.get('releasedate') or rl.get('release_date') or rl.get('released_at') or 
+                        rl.get('printed') or rl.get('printedat') or rl.get('printed_at') or ''
+                    )
+                    set_type = (rl.get('set_type') or rl.get('type') or rl.get('settype') or '').strip().lower()
+                    digital = str(rl.get('digital') or rl.get('is_digital') or '').strip().lower() in ('1','true','yes')
                     if set_name:
                         sets.append({
                             'game': 'Magic: The Gathering',
                             'set_name': set_name,
                             'released': str(released or ''),
                             'year': normalize_year(released),
+                            'set_code': str(set_code or '').strip(),
+                            'cards_in_set': str(total_cards or '').strip(),
+                            'set_type': set_type,
+                            'digital': digital,
                         })
     except Exception:
         pass
@@ -3130,10 +3771,14 @@ def load_sets_catalog() -> List[Dict]:
             with open(pkmn_path, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    set_name = row.get('set') or row.get('name') or row.get('Name') or row.get('set_name') or row.get('Set Name') or ''
+                    # Case-insensitive row access
+                    rl = { (k or '').lower(): v for k, v in row.items() }
+                    set_name = rl.get('set') or rl.get('name') or rl.get('set_name') or rl.get('set name') or ''
+                    set_code = rl.get('id') or rl.get('code') or rl.get('set_code') or rl.get('set code') or rl.get('ptcgocode') or ''
+                    total_cards = rl.get('printedtotal') or rl.get('total') or rl.get('cards') or ''
                     released = (
-                        row.get('year') or row.get('released') or row.get('releaseDate') or row.get('release_date') or row.get('released_at') or 
-                        row.get('printed') or row.get('printedAt') or row.get('printed_at') or ''
+                        rl.get('year') or rl.get('released') or rl.get('releasedate') or rl.get('release_date') or rl.get('released_at') or 
+                        rl.get('printed') or rl.get('printedat') or rl.get('printed_at') or ''
                     )
                     if set_name:
                         sets.append({
@@ -3141,6 +3786,8 @@ def load_sets_catalog() -> List[Dict]:
                             'set_name': set_name,
                             'released': str(released or ''),
                             'year': normalize_year(released),
+                            'set_code': str(set_code or '').strip(),
+                            'cards_in_set': str(total_cards or '').strip(),
                         })
     except Exception:
         pass
@@ -3157,12 +3804,99 @@ def render_card_sets_view():
         st.info("No sets found in fallback data.")
         return
 
-    # Build owned counts from current collection
-    collection = st.session_state.get(SESSION_KEYS["collection"], [])
+    # Normalizer used for mapping keys
     def _norm(s: str) -> str:
         import re as _re
         return _re.sub(r"[^a-z0-9]+", "", (s or '').strip().lower())
 
+    # Build cached-card counts per (game, set) and per (game, set_code) from fallback CSVs
+    cached_counts: Dict[tuple, int] = {}
+    cached_counts_code: Dict[tuple, int] = {}
+    try:
+        base_dir = os.path.dirname(__file__)
+        mtg_cards_path = os.path.join(base_dir, 'fallback_data', 'MTG', 'mtgcards.csv')
+        pkmn_cards_path = os.path.join(base_dir, 'fallback_data', 'Pokemon', 'pokemoncards.csv')
+        pkmn_sets_path = os.path.join(base_dir, 'fallback_data', 'Pokemon', 'pokemonsets.csv')
+
+        # Build a lookup map for Pokémon set codes -> set names (to recover names if card rows lack them)
+        pkmn_setcode_to_name: Dict[str, str] = {}
+        try:
+            if os.path.exists(pkmn_sets_path):
+                with open(pkmn_sets_path, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        # Case-insensitive access
+                        rl = { (k or '').lower(): v for k, v in row.items() }
+                        code = (
+                            (rl.get('code') or rl.get('set_code') or rl.get('set code') or rl.get('ptcgocode') or rl.get('id') or '').strip()
+                        )
+                        name = (
+                            rl.get('set') or rl.get('name') or rl.get('set_name') or rl.get('set name') or ''
+                        )
+                        if code and name:
+                            pkmn_setcode_to_name[_norm(code)] = name
+        except Exception:
+            pass
+
+        def _bump(game_label: str, set_name: str):
+            if not set_name:
+                return
+            k = (_norm(game_label), _norm(set_name))
+            cached_counts[k] = cached_counts.get(k, 0) + 1
+
+        def _bump_code(game_label: str, set_code: str):
+            if not set_code:
+                return
+            k = (_norm(game_label), _norm(set_code))
+            cached_counts_code[k] = cached_counts_code.get(k, 0) + 1
+
+        # MTG
+        try:
+            if os.path.exists(mtg_cards_path):
+                with open(mtg_cards_path, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        set_name = (
+                            row.get('set') or row.get('set_name') or row.get('Set Name') or row.get('name') or ''
+                        )
+                        set_code = row.get('set_code') or row.get('Set Code') or row.get('code') or ''
+                        _bump('Magic: The Gathering', set_name)
+                        _bump_code('Magic: The Gathering', set_code)
+        except Exception:
+            pass
+
+        # Pokémon
+        try:
+            if os.path.exists(pkmn_cards_path):
+                with open(pkmn_cards_path, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        rl = { (k or '').lower(): v for k, v in row.items() }
+                        set_name = (
+                            rl.get('set') or rl.get('set_name') or rl.get('set name') or rl.get('name') or ''
+                        )
+                        # Prefer explicit set_code, else derive from id (e.g., base2-58 -> base2)
+                        explicit_code = (
+                            rl.get('set_code') or rl.get('set code') or rl.get('code') or rl.get('ptcgocode') or ''
+                        )
+                        id_code = ''
+                        raw_id = (rl.get('id') or '').strip()
+                        if raw_id and '-' in raw_id:
+                            id_code = raw_id.split('-', 1)[0].strip()
+                        code_for_row = explicit_code or id_code
+                        if not set_name and code_for_row:
+                            set_name = pkmn_setcode_to_name.get(_norm(code_for_row), '')
+                        # Bump counts
+                        _bump('Pokémon', set_name)
+                        if code_for_row:
+                            _bump_code('Pokémon', code_for_row)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # Build owned counts from current collection
+    collection = st.session_state.get(SESSION_KEYS["collection"], [])
     owned_unique: Dict[tuple, int] = {}
     owned_qty: Dict[tuple, int] = {}
     for card in collection:
@@ -3172,8 +3906,50 @@ def render_card_sets_view():
 
     # Prepare DataFrame
     df = pd.DataFrame(sets)
+    # Add cached card counts per set (prefer matching by set_code if present, else by set_name)
+    def _cached_for_row(r: pd.Series) -> int:
+        g = _norm(r.get('game', ''))
+        sc = _norm(str(r.get('set_code', '') or ''))
+        sn = _norm(str(r.get('set_name', '') or ''))
+        if sc:
+            return cached_counts_code.get((g, sc), 0)
+        return cached_counts.get((g, sn), 0)
+
+    df['Cached Cards'] = df.apply(_cached_for_row, axis=1)
+    # Derive numeric Cards in Set if present from catalog
+    def _to_int(v: str) -> int:
+        try:
+            s = str(v or '').strip()
+            return int(s) if s.isdigit() else 0
+        except Exception:
+            return 0
+    if 'cards_in_set' in df.columns:
+        df['Cards in Set'] = df['cards_in_set'].apply(_to_int)
+    else:
+        df['Cards in Set'] = 0
     df['Owned Unique'] = df.apply(lambda r: owned_unique.get((_norm(r['game']), _norm(r['set_name'])), 0), axis=1)
     df['Owned Qty'] = df.apply(lambda r: owned_qty.get((_norm(r['game']), _norm(r['set_name'])), 0), axis=1)
+
+    # Reorder columns to place 'Cards in Set' before 'Cached Cards' and keep 'Cached Cards' last
+    try:
+        cols = list(df.columns)
+        if 'Cached Cards' in cols:
+            cols.remove('Cached Cards')
+        # Ensure Cards in Set exists and near the end, just before Cached Cards
+        if 'Cards in Set' in cols:
+            cols.remove('Cards in Set')
+            cols.append('Cards in Set')
+        cols.append('Cached Cards')
+        # De-duplicate and apply
+        seen = set()
+        ordered = []
+        for c in cols:
+            if c in df.columns and c not in seen:
+                seen.add(c)
+                ordered.append(c)
+        df = df[ordered]
+    except Exception:
+        pass
 
     # Filters (shared across tabs)
     filt_col1, filt_col2 = st.columns([2, 1])
@@ -3202,40 +3978,329 @@ def render_card_sets_view():
         )
         return local
 
+    # Helper: fetch and cache a full set by game + code
+    def _fetch_and_cache_set(game_label: str, set_code: str) -> bool:
+        ok = True
+        try:
+            if not set_code:
+                st.warning("Missing set code for this set; cannot fetch.")
+                return False
+            # Use already-imported storage helpers from fallback_manager
+            # Pokémon
+            if game_label == 'Pokémon':
+                if not st.session_state.get('pokemontcg_enabled', True):
+                    st.warning("Pokémon TCG API is disabled in settings.")
+                    return False
+                headers = {}
+                api_key = os.getenv('POKEMONTCG_API_KEY') or st.session_state.get('pokemontcg_api_key')
+                if api_key:
+                    headers['X-Api-Key'] = api_key
+                base_url = "https://api.pokemontcg.io/v2/cards"
+                q = f"set.id:{set_code}"
+                page = 1
+                pageSize = 250
+                total_saved = 0
+                pbar = st.progress(0.0, text=f"Fetching Pokémon set {set_code}…")
+                while True:
+                    resp = requests.get(base_url, params={"q": q, "page": page, "pageSize": pageSize}, headers=headers, timeout=30)
+                    resp.raise_for_status()
+                    data = resp.json() or {}
+                    cards = data.get('data', []) or []
+                    if not cards:
+                        break
+                    for c in cards:
+                        try:
+                            store_pokemon_card(c)
+                            total_saved += 1
+                        except Exception:
+                            continue
+                    total_count = int(data.get('totalCount', 0) or 0)
+                    if total_count:
+                        pbar.progress(min(1.0, total_saved / total_count), text=f"Saved {total_saved}/{total_count}…")
+                    if len(cards) < pageSize:
+                        break
+                    page += 1
+                pbar.empty()
+                st.success(f"Saved {total_saved} Pokémon cards for set {set_code} to cache.")
+            # MTG
+            elif game_label == 'Magic: The Gathering':
+                if not st.session_state.get('scryfall_enabled', True):
+                    st.warning("Scryfall API is disabled in settings.")
+                    return False
+                url = "https://api.scryfall.com/cards/search"
+                params = {"q": f"e:{set_code}", "unique": "prints"}
+                total_saved = 0
+                pbar = st.progress(0.0, text=f"Fetching MTG set {set_code}…")
+                next_url = url
+                next_params = params
+                while next_url:
+                    resp = requests.get(next_url, params=next_params, timeout=30)
+                    resp.raise_for_status()
+                    data = resp.json() or {}
+                    items = data.get('data', []) or []
+                    for c in items:
+                        try:
+                            store_mtg_card(c)
+                            total_saved += 1
+                        except Exception:
+                            continue
+                    if data.get('has_more') and data.get('next_page'):
+                        next_url = data.get('next_page')
+                        next_params = None
+                    else:
+                        next_url = None
+                    est = max(total_saved, int(data.get('total_cards') or 0))
+                    if est:
+                        pbar.progress(min(1.0, total_saved / est), text=f"Saved {total_saved}…")
+                pbar.empty()
+                st.success(f"Saved {total_saved} MTG cards for set {set_code} to cache.")
+        except Exception as e:
+            st.error(f"Failed to fetch set {set_code}: {e}")
+            ok = False
+        return ok
     tab_all, tab_mtg, tab_pkmn = st.tabs(["All Sets", "Magic: The Gathering", "Pokémon"])
     with tab_all:
         view_all = render_sets_table(df)
         with st.expander("Actions", expanded=False):
-            opts = sorted(view_all['set_name'].dropna().unique().tolist()) if not view_all.empty else []
-            sel = st.selectbox("Select a set to view in Collection", options=opts, key="sets_action_all") if opts else None
-            if opts and st.button("View in Collection", key="btn_view_in_collection_all"):
-                st.session_state[SESSION_KEYS["show_collection_view"]] = True
-                st.session_state[SESSION_KEYS["show_sets_view"]] = False
-                st.session_state[SESSION_KEYS["show_mtg_sets_view"]] = False
-                st.session_state['coll_set_filter'] = sel
-                st.rerun()
+            opts = (view_all[['game','set_name','set_code']].copy().reset_index(drop=True) if not view_all.empty else pd.DataFrame(columns=['game','set_name','set_code']))
+            if not opts.empty:
+                sel_idx = st.selectbox(
+                    "Select a set",
+                    options=list(range(len(opts))),
+                    format_func=lambda i: f"{opts.iloc[i]['game']} — {opts.iloc[i]['set_name']} ({opts.iloc[i]['set_code'] or 'no code'})"
+                )
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button("View in Collection", key="btn_view_in_collection_all"):
+                        sel = opts.iloc[sel_idx]['set_name']
+                        st.session_state[SESSION_KEYS["show_collection_view"]] = True
+                        st.session_state[SESSION_KEYS["show_sets_view"]] = False
+                        st.session_state[SESSION_KEYS["show_mtg_sets_view"]] = False
+                        st.session_state['coll_set_filter'] = sel
+                        st.rerun()
+                with col_b:
+                    if st.button("Download Full Set to Cache", key="btn_download_set_all"):
+                        _fetch_and_cache_set(str(opts.iloc[sel_idx]['game']), str(opts.iloc[sel_idx]['set_code'] or ''))
+            # Bulk download all visible sets
+            stop_on_error_all = st.toggle("Stop on first error", value=False, key="bulk_stop_on_error_all")
+            retry_failed_all = st.toggle("Retry failed sets", value=True, key="bulk_retry_failed_all")
+            if not opts.empty and st.button("Download ALL Visible Sets to Cache", key="btn_download_all_sets_all"):
+                # Filter out rows without a set_code
+                rows = opts.copy()
+                rows = rows[rows['set_code'].astype(str).str.strip().astype(bool)].reset_index(drop=True)
+                total = len(rows)
+                if total == 0:
+                    st.warning("No sets with codes available to download.")
+                else:
+                    pbar = st.progress(0.0, text=f"Downloading 0/{total} sets…")
+                    processed = 0
+                    results: List[Dict[str, Any]] = []
+                    for i in range(total):
+                        game_label = str(rows.iloc[i]['game'])
+                        set_code = str(rows.iloc[i]['set_code'])
+                        success = _fetch_and_cache_set(game_label, set_code)
+                        if not success and retry_failed_all:
+                            time.sleep(1.0)
+                            success_retry = _fetch_and_cache_set(game_label, set_code)
+                            success = success_retry
+                            results.append({"game": game_label, "set_code": set_code, "status": "retried_ok" if success_retry else "failed"})
+                        else:
+                            results.append({"game": game_label, "set_code": set_code, "status": "ok" if success else "failed"})
+                        processed += 1
+                        if not success and stop_on_error_all:
+                            pbar.progress((i+1)/total, text=f"Stopped on error at {i+1}/{total} sets…")
+                            break
+                        pbar.progress((i+1)/total, text=f"Downloading {i+1}/{total} sets…")
+                    pbar.empty()
+                    st.success(f"Finished downloading {processed} set(s) to cache.")
+                    # Summary table
+                    if results:
+                        df_res = pd.DataFrame(results)
+                        # Order columns nicely
+                        cols = [c for c in ["game", "set_code", "status"] if c in df_res.columns]
+                        st.dataframe(df_res[cols], use_container_width=True)
     with tab_mtg:
-        view_mtg = render_sets_table(df[df['game'] == 'Magic: The Gathering'])
+        # MTG-specific filters
+        mtg_df = df[df['game'] == 'Magic: The Gathering'].copy()
+        st.subheader("MTG Filters")
+        fcol1, fcol2, fcol3, fcol4, fcol5 = st.columns(5)
+        with fcol1:
+            show_main = st.toggle("Main", value=True, key="mtg_show_main")
+            show_commander = st.toggle("Commander", value=True, key="mtg_show_commander")
+        with fcol2:
+            show_planechase = st.toggle("Planechase", value=True, key="mtg_show_planechase")
+            show_prebuilt = st.toggle("Pre-Built", value=True, key="mtg_show_prebuilt")
+        with fcol3:
+            show_vanguard = st.toggle("Vanguard", value=True, key="mtg_show_vanguard")
+            show_other = st.toggle("Other", value=True, key="mtg_show_other")
+        with fcol4:
+            include_digital = st.toggle("Digital", value=False, key="mtg_include_digital")
+        with fcol5:
+            hide_token = st.toggle("Hide Token", value=True, key="mtg_hide_token")
+            hide_promo = st.toggle("Hide Promo", value=True, key="mtg_hide_promo")
+            hide_art = st.toggle("Hide Art Series", value=True, key="mtg_hide_art")
+
+        def _mtg_group(row: pd.Series) -> str:
+            stype = str(row.get('set_type', '') or '').lower()
+            if 'commander' in stype:
+                return 'Commander'
+            if 'planechase' in stype:
+                return 'Planechase'
+            if 'vanguard' in stype:
+                return 'Vanguard'
+            if any(x in stype for x in ['starter', 'intro', 'theme', 'duel', 'deck', 'precon', 'box']):
+                return 'Pre-Built'
+            return 'Main'
+
+        try:
+            mtg_df['mtg_group'] = mtg_df.apply(_mtg_group, axis=1)
+        except Exception:
+            mtg_df['mtg_group'] = 'Main'
+
+        # Apply visibility filters
+        allowed_groups = set()
+        if show_main: allowed_groups.add('Main')
+        if show_commander: allowed_groups.add('Commander')
+        if show_planechase: allowed_groups.add('Planechase')
+        if show_prebuilt: allowed_groups.add('Pre-Built')
+        if show_vanguard: allowed_groups.add('Vanguard')
+        if show_other: allowed_groups.add('Other')  # reserve in case mapping assigns 'Other' later
+
+        def _keep_row(row: pd.Series) -> bool:
+            stype = str(row.get('set_type', '') or '').lower()
+            if hide_token and 'token' in stype:
+                return False
+            if hide_promo and 'promo' in stype:
+                return False
+            if hide_art and (('memorabilia' in stype) or ('art' in stype)):
+                return False
+            # digital filter (exclude unless explicitly included)
+            if bool(row.get('digital', False)) and not include_digital:
+                return False
+            grp = row.get('mtg_group') or 'Main'
+            if grp not in allowed_groups:
+                # allow "Other" bucket for anything unmapped
+                return 'Other' in allowed_groups
+            return True
+
+        try:
+            mtg_df = mtg_df[mtg_df.apply(_keep_row, axis=1)]
+        except Exception:
+            pass
+
+        view_mtg = render_sets_table(mtg_df)
         with st.expander("Actions", expanded=False):
-            opts = sorted(view_mtg['set_name'].dropna().unique().tolist()) if not view_mtg.empty else []
-            sel = st.selectbox("Select a set to view in Collection", options=opts, key="sets_action_mtg") if opts else None
-            if opts and st.button("View in Collection", key="btn_view_in_collection_mtg"):
-                st.session_state[SESSION_KEYS["show_collection_view"]] = True
-                st.session_state[SESSION_KEYS["show_sets_view"]] = False
-                st.session_state[SESSION_KEYS["show_mtg_sets_view"]] = False
-                st.session_state['coll_set_filter'] = sel
-                st.rerun()
+            opts = (view_mtg[['set_name','set_code']].copy().reset_index(drop=True) if not view_mtg.empty else pd.DataFrame(columns=['set_name','set_code']))
+            if not opts.empty:
+                sel_idx = st.selectbox(
+                    "Select MTG set",
+                    options=list(range(len(opts))),
+                    format_func=lambda i: f"{opts.iloc[i]['set_name']} ({opts.iloc[i]['set_code'] or 'no code'})"
+                )
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button("View in Collection", key="btn_view_in_collection_mtg"):
+                        sel = opts.iloc[sel_idx]['set_name']
+                        st.session_state[SESSION_KEYS["show_collection_view"]] = True
+                        st.session_state[SESSION_KEYS["show_sets_view"]] = False
+                        st.session_state[SESSION_KEYS["show_mtg_sets_view"]] = False
+                        st.session_state['coll_set_filter'] = sel
+                        st.rerun()
+                with col_b:
+                    if st.button("Download Full Set to Cache", key="btn_download_set_mtg"):
+                        _fetch_and_cache_set('Magic: The Gathering', str(opts.iloc[sel_idx]['set_code'] or ''))
+        # Bulk download for MTG visible sets
+        if not view_mtg.empty:
+            _mtg_opts = (view_mtg[['set_code']].copy().reset_index(drop=True))
+            stop_on_error_mtg = st.toggle("Stop on first error (MTG)", value=False, key="bulk_stop_on_error_mtg")
+            retry_failed_mtg = st.toggle("Retry failed sets (MTG)", value=True, key="bulk_retry_failed_mtg")
+            if not _mtg_opts.empty and st.button("Download ALL Visible MTG Sets to Cache", key="btn_download_all_sets_mtg"):
+                rows = _mtg_opts[_mtg_opts['set_code'].astype(str).str.strip().astype(bool)].reset_index(drop=True)
+                total = len(rows)
+                if total == 0:
+                    st.warning("No MTG sets with codes available to download.")
+                else:
+                    pbar = st.progress(0.0, text=f"Downloading 0/{total} MTG sets…")
+                    processed = 0
+                    results: List[Dict[str, Any]] = []
+                    for i in range(total):
+                        set_code = str(rows.iloc[i]['set_code'])
+                        success = _fetch_and_cache_set('Magic: The Gathering', set_code)
+                        if not success and retry_failed_mtg:
+                            time.sleep(1.0)
+                            success_retry = _fetch_and_cache_set('Magic: The Gathering', set_code)
+                            success = success_retry
+                            results.append({"game": "Magic: The Gathering", "set_code": set_code, "status": "retried_ok" if success_retry else "failed"})
+                        else:
+                            results.append({"game": "Magic: The Gathering", "set_code": set_code, "status": "ok" if success else "failed"})
+                        processed += 1
+                        if not success and stop_on_error_mtg:
+                            pbar.progress((i+1)/total, text=f"Stopped on error at {i+1}/{total} MTG sets…")
+                            break
+                        pbar.progress((i+1)/total, text=f"Downloading {i+1}/{total} MTG sets…")
+                    pbar.empty()
+                    st.success(f"Finished downloading {processed} MTG set(s) to cache.")
+                    # Summary table
+                    if results:
+                        df_res = pd.DataFrame(results)
+                        st.dataframe(df_res[["game", "set_code", "status"]], use_container_width=True)
     with tab_pkmn:
         view_pkmn = render_sets_table(df[df['game'] == 'Pokémon'])
         with st.expander("Actions", expanded=False):
-            opts = sorted(view_pkmn['set_name'].dropna().unique().tolist()) if not view_pkmn.empty else []
-            sel = st.selectbox("Select a set to view in Collection", options=opts, key="sets_action_pkmn") if opts else None
-            if opts and st.button("View in Collection", key="btn_view_in_collection_pkmn"):
-                st.session_state[SESSION_KEYS["show_collection_view"]] = True
-                st.session_state[SESSION_KEYS["show_sets_view"]] = False
-                st.session_state[SESSION_KEYS["show_mtg_sets_view"]] = False
-                st.session_state['coll_set_filter'] = sel
-                st.rerun()
+            opts = (view_pkmn[['set_name','set_code']].copy().reset_index(drop=True) if not view_pkmn.empty else pd.DataFrame(columns=['set_name','set_code']))
+            if not opts.empty:
+                sel_idx = st.selectbox(
+                    "Select Pokémon set",
+                    options=list(range(len(opts))),
+                    format_func=lambda i: f"{opts.iloc[i]['set_name']} ({opts.iloc[i]['set_code'] or 'no code'})"
+                )
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button("View in Collection", key="btn_view_in_collection_pkmn"):
+                        sel = opts.iloc[sel_idx]['set_name']
+                        st.session_state[SESSION_KEYS["show_collection_view"]] = True
+                        st.session_state[SESSION_KEYS["show_sets_view"]] = False
+                        st.session_state[SESSION_KEYS["show_mtg_sets_view"]] = False
+                        st.session_state['coll_set_filter'] = sel
+                        st.rerun()
+                with col_b:
+                    if st.button("Download Full Set to Cache", key="btn_download_set_pkmn"):
+                        _fetch_and_cache_set('Pokémon', str(opts.iloc[sel_idx]['set_code'] or ''))
+        # Bulk download for Pokémon visible sets
+        if not view_pkmn.empty:
+            _pk_opts = (view_pkmn[['set_code']].copy().reset_index(drop=True))
+            stop_on_error_pkmn = st.toggle("Stop on first error (Pokémon)", value=False, key="bulk_stop_on_error_pkmn")
+            retry_failed_pkmn = st.toggle("Retry failed sets (Pokémon)", value=True, key="bulk_retry_failed_pkmn")
+            if not _pk_opts.empty and st.button("Download ALL Visible Pokémon Sets to Cache", key="btn_download_all_sets_pkmn"):
+                rows = _pk_opts[_pk_opts['set_code'].astype(str).str.strip().astype(bool)].reset_index(drop=True)
+                total = len(rows)
+                if total == 0:
+                    st.warning("No Pokémon sets with codes available to download.")
+                else:
+                    pbar = st.progress(0.0, text=f"Downloading 0/{total} Pokémon sets…")
+                    processed = 0
+                    results: List[Dict[str, Any]] = []
+                    for i in range(total):
+                        set_code = str(rows.iloc[i]['set_code'])
+                        success = _fetch_and_cache_set('Pokémon', set_code)
+                        if not success and retry_failed_pkmn:
+                            time.sleep(1.0)
+                            success_retry = _fetch_and_cache_set('Pokémon', set_code)
+                            success = success_retry
+                            results.append({"game": "Pokémon", "set_code": set_code, "status": "retried_ok" if success_retry else "failed"})
+                        else:
+                            results.append({"game": "Pokémon", "set_code": set_code, "status": "ok" if success else "failed"})
+                        processed += 1
+                        if not success and stop_on_error_pkmn:
+                            pbar.progress((i+1)/total, text=f"Stopped on error at {i+1}/{total} Pokémon sets…")
+                            break
+                        pbar.progress((i+1)/total, text=f"Downloading {i+1}/{total} Pokémon sets…")
+                    pbar.empty()
+                    st.success(f"Finished downloading {processed} Pokémon set(s) to cache.")
+                    # Summary table
+                    if results:
+                        df_res = pd.DataFrame(results)
+                        st.dataframe(df_res[["game", "set_code", "status"]], use_container_width=True)
 
 def render_settings_view():
     """Render Settings page for app behavior preferences."""
@@ -3835,6 +4900,13 @@ def main():
                             mtg_number = st.text_input("Set Number (optional)", placeholder="e.g., 233")
                         with right:
                             mtg_set = st.text_input("Set (optional)", placeholder="e.g., Limited Edition Alpha")
+                    elif game == "Pokémon":
+                        pkmn_name = st.text_input("Card Name", placeholder="e.g., Pikachu")
+                        left, right = st.columns([1, 2])
+                        with left:
+                            pkmn_number = st.text_input("Card Number (optional)", placeholder="e.g., 58")
+                        with right:
+                            pkmn_set = st.text_input("Set (optional)", placeholder="e.g., Base Set or BASE")
                     else:
                         search_term = st.text_input("Search Term", placeholder="Card search coming soon for other games")
             
@@ -3925,7 +4997,7 @@ def main():
             else:
                 st.error("❌ Please enter a player name to search")
         elif submitted and game == "Magic: The Gathering":
-            # MTG search using Scryfall
+            # MTG search: fallback-first from local CSV, with option to refresh via Scryfall
             if 'mtg_name' in locals() and str(mtg_name).strip():
                 query_name = mtg_name.strip()
                 query_set = mtg_set.strip() if 'mtg_set' in locals() and mtg_set else ""
@@ -3939,10 +5011,28 @@ def main():
                         m = _re.search(r"\b(\d+[a-zA-Z]?)\b$", query_name)
                         if m:
                             collector_number = m.group(1)
-                            # remove trailing number from search name to avoid confusing Scryfall
                             query_name = query_name[: m.start()].strip()
                     except Exception:
                         pass
+
+                # Try local fallback first
+                local_cards = find_mtg_cards_local(query_name, set_hint=query_set, collector_number=collector_number)
+                force_api = False
+                if local_cards:
+                    try:
+                        last_upd = local_cards[0].get('updated_at') or 'unknown'
+                        st.toast(f"Using local data — Last updated {last_upd}", icon="💾")
+                    except Exception:
+                        pass
+                    cols = st.columns([1,3])
+                    with cols[0]:
+                        force_api = st.button("Refresh from API", key="mtg_refresh_api")
+                    if not force_api:
+                        st.session_state["mtg_last_results"] = local_cards
+                        st.session_state["mtg_results_visible"] = True
+                        render_mtg_search_results(local_cards)
+                        return
+
                 with st.spinner(f"🔍 Searching Scryfall for {query_name}..."):
                     cards, total, _, source = search_mtg_scryfall(query_name, set_hint=query_set, collector_number=collector_number)
                 st.write(f"Found {total} cards from {source}")
@@ -3955,12 +5045,131 @@ def main():
                     st.info("No results found.")
             else:
                 st.error("❌ Please enter a card name to search")
-        elif submitted and (game not in ["Baseball Cards", "Magic: The Gathering"]):
-            st.info(f"🚧 {game} search is coming soon! Please use Baseball Cards or Magic: The Gathering for now.")
+        # Support a refresh-triggered Pokémon API search even when the form isn't re-submitted
+        if st.session_state.get("pk_force_refresh"):
+            try:
+                rq = st.session_state.pop("pk_force_refresh") or {}
+                qn = rq.get("name", "").strip()
+                qs = rq.get("set", "").strip()
+                qnum = rq.get("number", "").strip()
+                if qn:
+                    with st.spinner(f"🔄 Refreshing from Pokémon TCG for {qn}..."):
+                        cards, total, _, source = search_pokemon_tcg(qn, set_hint=qs, number=qnum)
+                    st.write(f"Found {total} cards from {source}")
+                    if cards:
+                        st.session_state["pkmn_last_results"] = cards
+                        st.session_state["pkmn_results_visible"] = True
+                        render_pokemon_search_results(cards)
+                    else:
+                        st.info("No results found from API.")
+            except Exception as _e:
+                st.error(f"Refresh failed: {_e}")
+        elif submitted and game == "Pokémon":
+            # Pokémon search: fallback-first from local CSV, with option to refresh via API
+            if 'pkmn_name' in locals() and str(pkmn_name).strip():
+                query_name = pkmn_name.strip()
+                query_set = pkmn_set.strip() if 'pkmn_set' in locals() and pkmn_set else ""
+                query_number = pkmn_number.strip() if 'pkmn_number' in locals() and pkmn_number else ""
+
+                # Try local fallback first
+                local_cards_raw = find_pokemon_cards_local(query_name, set_hint=query_set, number=query_number)
+                force_api = False
+                if local_cards_raw:
+                    # Normalize local raw cards into UI cards (mirroring API normalization)
+                    norm_cards = []
+                    for c in local_cards_raw:
+                        try:
+                            set_obj = c.get("set", {}) or {}
+                            set_name = set_obj.get("name", "")
+                            set_code = (set_obj.get("id") or "").upper()
+                            released = set_obj.get("releaseDate", "")
+                            year = (str(released)[:4] if released else "")
+                            imgs = (c.get("images") or {})
+                            img_url = imgs.get("small") or imgs.get("large") or ""
+                            link = ( (c.get("tcgplayer") or {}).get("url")
+                                     or (c.get("cardmarket") or {}).get("url")
+                                     or f"https://pokemontcg.io/card/{c.get('id','')}")
+                            prices = ((c.get("tcgplayer") or {}).get("prices") or {})
+                            def _g(pr, k):
+                                try:
+                                    return float((pr or {}).get(k) or 0)
+                                except Exception:
+                                    return 0.0
+                            market_price = 0.0
+                            prices_map = {}
+                            for k in [
+                                "normal",
+                                "holofoil",
+                                "reverseHolofoil",
+                                "1stEditionHolofoil",
+                                "1stEdition",
+                                "unlimited",
+                                "unlimitedHolofoil",
+                            ]:
+                                p = prices.get(k) or {}
+                                low_v = _g(p, 'low'); mid_v = _g(p, 'mid'); mkt_v = _g(p, 'market')
+                                if any([low_v, mid_v, mkt_v]):
+                                    prices_map[k] = {"low": low_v, "mid": mid_v, "market": mkt_v}
+                                    market_price = mkt_v or market_price
+                            card = {
+                                "game": "Pokémon",
+                                "name": c.get("name", ""),
+                                "set": set_name,
+                                "set_code": set_code,
+                                "year": year,
+                                "card_number": c.get("number", ""),
+                                "image_url": img_url,
+                                "link": link,
+                                "price_usd": market_price,
+                                "quantity": 1,
+                                "variety": "",
+                                "prices_map": prices_map,
+                                "source": "Local Fallback"
+                            }
+                            norm_cards.append(card)
+                        except Exception:
+                            continue
+                    # Toast with last updated date from set.updatedAt if available
+                    try:
+                        last_upd = (local_cards_raw[0].get('set') or {}).get('updatedAt') or 'unknown'
+                        st.toast(f"Using local data — Last updated {last_upd}", icon="💾")
+                    except Exception:
+                        pass
+                    # Provide a refresh button to force API update
+                    cols = st.columns([1,3])
+                    with cols[0]:
+                        force_api = st.button("Refresh from API", key="pk_refresh_api")
+                    if not force_api and norm_cards:
+                        st.session_state["pkmn_last_results"] = norm_cards
+                        st.session_state["pkmn_results_visible"] = True
+                        render_pokemon_search_results(norm_cards)
+                        # Short-circuit normal API call
+                        return
+                    elif force_api:
+                        # Trigger a refresh-run with the same query using session state, then rerun
+                        st.session_state["pk_force_refresh"] = {"name": query_name, "set": query_set, "number": query_number}
+                        st.rerun()
+
+                # Either no local results or user requested refresh -> call API
+                with st.spinner(f"🔍 Searching Pokémon TCG for {query_name}..."):
+                    cards, total, _, source = search_pokemon_tcg(query_name, set_hint=query_set, number=query_number)
+                st.write(f"Found {total} cards from {source}")
+                if cards:
+                    st.session_state["pkmn_last_results"] = cards
+                    st.session_state["pkmn_results_visible"] = True
+                    render_pokemon_search_results(cards)
+                else:
+                    st.info("No results found.")
+            else:
+                st.error("❌ Please enter a card name to search")
+        elif submitted and (game not in ["Baseball Cards", "Magic: The Gathering", "Pokémon"]):
+            st.info(f"🚧 {game} search is coming soon! Please use Baseball Cards, Magic: The Gathering, or Pokémon for now.")
         
         # When not actively submitting search, keep showing last MTG results if available
         if not submitted and st.session_state.get("mtg_results_visible") and st.session_state.get("mtg_last_results"):
             render_mtg_search_results(st.session_state.get("mtg_last_results", []))
+        if not submitted and st.session_state.get("pkmn_results_visible") and st.session_state.get("pkmn_last_results"):
+            render_pokemon_search_results(st.session_state.get("pkmn_last_results", []))
         elif not submitted:
             # Welcome message when no search and no results to show
             collection = st.session_state.get(SESSION_KEYS["collection"], [])
