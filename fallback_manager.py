@@ -116,11 +116,32 @@ def append_to_csv(csv_path: str, data: Dict[str, Any], fieldnames: List[str]):
         logger.error(f"Failed to append to {csv_path}: {e}")
         raise
 
+def _get_existing_ids(csv_path: str, id_field: str) -> set:
+    """Read a CSV and return a set of values for the given id_field. Empty set if file missing."""
+    ids = set()
+    try:
+        if not os.path.exists(csv_path):
+            return ids
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if not row:
+                    continue
+                v = row.get(id_field)
+                if v is not None:
+                    ids.add(str(v))
+    except Exception as e:
+        logger.warning(f"Failed reading existing IDs from {csv_path}: {e}")
+    return ids
+
 def store_pokemon_set(set_data: Dict[str, Any]) -> bool:
     """Store Pokemon set data to fallback storage."""
     try:
         fieldnames = ["id", "name", "series", "printedTotal", "total", "legalities", 
                      "ptcgoCode", "releaseDate", "updatedAt", "images", "tcgplayer"]
+        # De-dup by id
+        existing = _get_existing_ids(POKEMON_SETS_CSV, "id")
+        set_id = str(set_data.get("id", ""))
         
         # Flatten nested objects for CSV storage
         flat_data = {
@@ -137,7 +158,8 @@ def store_pokemon_set(set_data: Dict[str, Any]) -> bool:
             "tcgplayer": json.dumps(set_data.get("tcgplayer", {}))
         }
         
-        append_to_csv(POKEMON_SETS_CSV, flat_data, fieldnames)
+        if set_id and set_id not in existing:
+            append_to_csv(POKEMON_SETS_CSV, flat_data, fieldnames)
         
         # Download set image if available
         images = set_data.get("images", {})
@@ -154,6 +176,9 @@ def store_pokemon_set(set_data: Dict[str, Any]) -> bool:
 def store_pokemon_card(card_data: Dict[str, Any]) -> bool:
     """Store Pokemon card data to fallback storage."""
     try:
+        # De-dup by id
+        existing = _get_existing_ids(POKEMON_CARDS_CSV, "id")
+        card_id_val = str(card_data.get("id", ""))
         fieldnames = ["id", "name", "supertype", "subtypes", "level", "rules", "hp", 
                      "types", "attacks", "weaknesses", "resistances", "retreatCost", 
                      "convertedRetreatCost", "damage", "ability", "ancientTrait", 
@@ -192,7 +217,8 @@ def store_pokemon_card(card_data: Dict[str, Any]) -> bool:
             "illustrationRare": card_data.get("illustrationRare", False)
         }
         
-        append_to_csv(POKEMON_CARDS_CSV, flat_data, fieldnames)
+        if card_id_val and card_id_val not in existing:
+            append_to_csv(POKEMON_CARDS_CSV, flat_data, fieldnames)
         
         # Download card images if available
         images = card_data.get("images", {})
@@ -250,6 +276,9 @@ def store_mtg_set(set_data: Dict[str, Any]) -> bool:
 def store_mtg_card(card_data: Dict[str, Any]) -> bool:
     """Store MTG card data to fallback storage."""
     try:
+        # De-dup by id
+        existing = _get_existing_ids(MTG_CARDS_CSV, "id")
+        card_id_val = str(card_data.get("id", ""))
         fieldnames = ["id", "name", "set_name", "set_code", "collector_number", "type_line", 
                      "mana_cost", "cmc", "rarity", "oracle_text", "colors", "color_identity", 
                      "legalities", "prices_usd", "prices_usd_foil", "prices_usd_etched", 
@@ -259,7 +288,7 @@ def store_mtg_card(card_data: Dict[str, Any]) -> bool:
                      "flavor_text", "card_back_id", "artist_ids", "watermark", "frame", 
                      "frame_effects", "security_stamp", "finishes", "oversized", "promo", 
                      "reprint", "variation", "language", "set_uri", "scryfall_uri", 
-                     "object", "created_at", "updated_at"]
+                     "object", "created_at", "updated_at", "released_at"]
         
         # Flatten nested objects for CSV storage
         flat_data = {
@@ -310,10 +339,12 @@ def store_mtg_card(card_data: Dict[str, Any]) -> bool:
             "scryfall_uri": card_data.get("scryfall_uri", ""),
             "object": card_data.get("object", ""),
             "created_at": card_data.get("created_at", ""),
-            "updated_at": card_data.get("updated_at", "")
+            "updated_at": card_data.get("updated_at", ""),
+            "released_at": card_data.get("released_at", "")
         }
         
-        append_to_csv(MTG_CARDS_CSV, flat_data, fieldnames)
+        if card_id_val and card_id_val not in existing:
+            append_to_csv(MTG_CARDS_CSV, flat_data, fieldnames)
         
         # Download card images if available
         image_uris = card_data.get("image_uris", {})
@@ -378,3 +409,168 @@ def get_fallback_stats() -> Dict[str, Any]:
 
 # Initialize directories on import
 ensure_directories()
+
+# ---------- Local query helpers for Pokémon ----------
+def _load_pokemon_sets_map() -> Dict[str, Dict[str, Any]]:
+    """Load Pokemon sets into a map keyed by set id."""
+    sets = {}
+    try:
+        if os.path.exists(POKEMON_SETS_CSV):
+            with open(POKEMON_SETS_CSV, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    sid = row.get('id') or ''
+                    if not sid:
+                        continue
+                    try:
+                        sets[sid] = {
+                            'id': sid,
+                            'name': row.get('name') or '',
+                            'releaseDate': row.get('releaseDate') or '',
+                            'updatedAt': row.get('updatedAt') or ''
+                        }
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    return sets
+
+def find_pokemon_cards_local(name: str, set_hint: str = "", number: str = "") -> List[Dict[str, Any]]:
+    """Search locally stored Pokemon cards (fallback CSV). Returns raw card-like dicts.
+    - Filters by name substring (case-insensitive)
+    - Filters by set id (short uppercase) or set name contains set_hint
+    - Filters by exact card number if provided
+    """
+    results: List[Dict[str, Any]] = []
+    name_q = (name or '').strip().lower()
+    set_q = (set_hint or '').strip()
+    num_q = (number or '').strip()
+    sets_map = _load_pokemon_sets_map()
+    try:
+        if not os.path.exists(POKEMON_CARDS_CSV):
+            return []
+        with open(POKEMON_CARDS_CSV, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    # Name filter
+                    nm = (row.get('name') or '').lower()
+                    if name_q and name_q not in nm:
+                        continue
+                    # Number filter (prefix match to handle values like '89/100')
+                    if num_q:
+                        nval = str(row.get('number') or '').strip()
+                        if not nval.startswith(num_q):
+                            continue
+                    # Derive set id from card id prefix before '-'
+                    cid = row.get('id') or ''
+                    sid = cid.split('-')[0] if '-' in cid else ''
+                    # Set filter
+                    if set_q:
+                        if len(set_q) <= 5 and set_q.upper() == set_q:
+                            if sid.upper() != set_q.upper():
+                                continue
+                        else:
+                            sname = (sets_map.get(sid, {}).get('name') or '').lower()
+                            if set_q.lower() not in sname:
+                                continue
+                    # Reconstruct minimal raw card dict as from API
+                    images = {}
+                    try:
+                        images = json.loads(row.get('images') or '{}')
+                    except Exception:
+                        images = {}
+                    tcg = {}
+                    try:
+                        tcg = json.loads(row.get('tcgplayer') or '{}')
+                    except Exception:
+                        tcg = {}
+                    raw = {
+                        'id': cid,
+                        'name': row.get('name') or '',
+                        'number': row.get('number') or '',
+                        'images': images,
+                        'tcgplayer': tcg,
+                        # inject a minimal set object from sets map if present
+                        'set': sets_map.get(sid, {'id': sid})
+                    }
+                    results.append(raw)
+                except Exception:
+                    continue
+    except Exception:
+        return []
+    return results
+
+# ---------- Local query helpers for MTG ----------
+def find_mtg_cards_local(name: str, set_hint: str = "", collector_number: str = "") -> List[Dict[str, Any]]:
+    """Search locally stored MTG cards (fallback CSV). Returns UI-ready card dicts.
+    Filters:
+    - name substring (case-insensitive)
+    - set_hint: uppercase short code matches set_code, otherwise substring match on set_name
+    - collector_number exact match if provided
+    """
+    results: List[Dict[str, Any]] = []
+    nq = (name or '').strip().lower()
+    sh = (set_hint or '').strip()
+    cn = (collector_number or '').strip()
+    try:
+        if not os.path.exists(MTG_CARDS_CSV):
+            return []
+        with open(MTG_CARDS_CSV, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    nm = (row.get('name') or '').lower()
+                    if nq and nq not in nm:
+                        continue
+                    if cn and str(row.get('collector_number') or '').strip() != cn:
+                        continue
+                    set_code = (row.get('set_code') or '').upper()
+                    set_name = row.get('set_name') or ''
+                    if sh:
+                        if len(sh) <= 5 and sh.upper() == sh:
+                            if set_code != sh.upper():
+                                continue
+                        else:
+                            if sh.lower() not in (set_name or '').lower():
+                                continue
+                    # Build UI card dict
+                    def _to_f(x):
+                        try:
+                            return float(x) if x not in (None, '', 'None') else 0.0
+                        except Exception:
+                            return 0.0
+                    img = row.get('image_uris_normal') or row.get('image_uris_large') or row.get('image_uris_small') or ''
+                    year = ''
+                    rls = row.get('released_at') or ''
+                    if rls:
+                        year = rls[:4]
+                    card = {
+                        'game': 'Magic: The Gathering',
+                        'name': row.get('name') or '',
+                        'set': set_name,
+                        'set_code': set_code.lower() if set_code else '',
+                        'year': year,
+                        'artist': row.get('artist') or '',
+                        'team': '',
+                        'position': '',
+                        'card_number': row.get('collector_number') or '',
+                        'variety': '',
+                        'price_usd': _to_f(row.get('prices_usd')),
+                        'price_usd_foil': _to_f(row.get('prices_usd_foil')),
+                        'price_usd_etched': _to_f(row.get('prices_usd_etched')),
+                        'image_url': img,
+                        'link': row.get('scryfall_uri') or '',
+                        'quantity': 1,
+                        'variant': '',
+                        'source': 'Local Fallback',
+                        'updated_at': row.get('updated_at') or '',
+                        'has_nonfoil': True if row.get('prices_usd') else False,
+                        'has_foil': True if row.get('prices_usd_foil') else False
+                    }
+                    results.append(card)
+                except Exception:
+                    continue
+    except Exception:
+        return []
+    return results

@@ -4,11 +4,12 @@
   "scryfall_url": "https://scryfall.com",
   "scryfall_docs": "https://scryfall.com/docs/api",
 
-  "pokemontcg_enabled": false,
-  "pokemonpublic_enabled": true,
+  "pokemontcg_enabled": true,
   "pokemontcg_api": "https://api.pokemontcg.io/v2/cards",
   "pokemontcg_url": "https://pokemontcg.io",
   "pokemontcg_docs": "https://docs.pokemontcg.io/",
+
+  "pokemonpublic_enabled": false,
 
   "justtcg_enabled": false,
   "justtcg_api": "https://api.justtcg.com",
