@@ -1,173 +1,141 @@
-# TCG Price Tracker - Project Structure
+# Collectibles Manager — Project Structure
 
-## 📁 **Folder Organization**
+## Root Directory
 
-### **📂 Root Directory: `/tcgpricetracker/`**
 ```
-tcgpricetracker/
-├── 📄 Main Application Files
-│   ├── tcgpricetracker.py          # Main Streamlit app
-│   ├── ui_handlers.py              # UI rendering functions
-│   ├── constants.py                # App constants and paths
-│   ├── fallback_manager.py         # Fallback data management
-│   └── .streamlit/                 # Streamlit configuration
-│       └── secrets.toml            # API keys and secrets
+collectibles_manager/
+├── package.json              # Root npm scripts (dev, backend, frontend)
+├── package-lock.json         # npm lockfile for concurrently
+├── .nvmrc                    # Pins Node version to 20
+├── .gitignore
 │
-├── 📁 docs/                        # Documentation
-│   ├── PROJECT_STRUCTURE.md        # This file
-│   ├── CSV_FIELDS_UPDATE_COMPLETE.md
-│   ├── SMART_UPDATE_COMPLETE.md
-│   └── [all other .md files]
+├── backend/                  # FastAPI REST API
+├── frontend/                 # React + TypeScript (Vite)
 │
-├── 📁 utility/                     # Utility scripts
-│   ├── enhanced_mtg_sets.py        # MTG sets enhancement tools
-│   ├── fix_mtg_csv.py              # CSV cleaning and repair
-│   ├── update_mtg_csv_fields.py    # CSV field expansion
-│   └── old/                        # Archived utilities
-│       ├── README.md               # Archive documentation
-│       ├── add_game_type.py        # Deprecated game type script
-│       ├── add_scryfall_link.py    # Deprecated link script
-│       ├── mtg_sets_cache.csv      # Old cached data
-│       └── mtg_sets_cache.json     # Old cached data
-│
-├── 📁 logs/                        # Log files
-│   └── pokemon_search.log          # Pokemon API search logs
-│
-├── 📁 fallback_data/              # Local data cache
+├── collections/              # Owner collection data (gitignored CSVs)
+├── fallback_data/            # Offline card/set cache (gitignored)
 │   ├── MTG/
-│   │   ├── mtgsets.csv            # MTG sets database
-│   │   ├── SetImages/             # MTG set icons
-│   │   └── CardImages/            # MTG card images
+│   │   ├── mtgsets.csv
+│   │   ├── SetImages/
+│   │   └── CardImages/
 │   └── Pokemon/
-│       ├── pokemonsets.csv        # Pokemon sets database
-│       ├── SetImages/             # Pokemon set icons
-│       └── CardImages/            # Pokemon card images
+│       ├── pokemonsets.csv
+│       ├── SetImages/
+│       └── CardImages/
 │
-├── 📄 toggle_settings.json        # App toggle settings
-├── 📁 __pycache__/                 # Python cache files
-└── 📁 .venv/                      # Virtual environment
+├── collectibles.db           # SQLite database (gitignored, auto-created)
+├── constants.py              # Legacy constants (referenced by backend/legacy/)
+├── fallback_manager.py       # Legacy fallback manager (referenced by backend/legacy/)
+├── image_sources.py          # Legacy image source helpers
+│
+├── docs/                     # Developer documentation
+├── utility/                  # Maintenance and migration scripts
+│   └── old/                  # Archived / deprecated scripts
+└── logs/                     # Runtime logs (gitignored)
 ```
 
 ---
 
-## 🎯 **File Categories**
+## Backend (`backend/`)
 
-### **📄 Core Application**
-- **`tcgpricetracker.py`** - Main Streamlit application
-- **`ui_handlers.py`** - UI components and page rendering
-- **`constants.py`** - Global constants and configuration
-- **`fallback_manager.py`** - Data caching and storage management
-
-### **📁 Documentation (`docs/`)**
-All `.md` files documenting:
-- Feature implementations
-- Bug fixes and solutions
-- Technical specifications
-- Update summaries
-- Project architecture
-
-### **🔧 Utility Scripts (`utility/`)**
-All `.py` utility scripts for:
-- Data migration and repair
-- CSV processing and cleaning
-- Field expansion and updates
-- Maintenance tasks
-
-### **�️ Archived Utilities (`utility/old/`)**
-Deprecated scripts kept for:
-- Historical reference
-- Development evolution tracking
-- Logic snippets for future reference
-- **DO NOT USE** - obsolete code
-
-### **📝 Log Files (`logs/`)**
-Application logs for:
-- API request debugging
-- Error tracking
-- Performance monitoring
-- Search activity logs
-
-### **�💾 Data Storage (`fallback_data/`)**
-Local cache for:
-- MTG and Pokemon sets (CSV files)
-- Card and set images
-- Backup files
-- Temporary data
-
----
-
-## 📋 **File Naming Conventions**
-
-### **📄 Python Files**
-- **Core:** `lowercase_with_underscores.py`
-- **Utility:** `descriptive_name.py` (in `utility/` folder)
-- **Main:** `tcgpricetracker.py`
-
-### **📁 Documentation**
-- **Format:** `DESCRIPTIVE_NAME.md`
-- **Style:** `UPPERCASE_WITH_UNDERSCORES`
-- **Location:** `docs/` folder
-
-### **💾 Data Files**
-- **CSV:** `lowercase.csv` (e.g., `mtgsets.csv`)
-- **Images:** `{id}_{type}.{ext}` (e.g., `lea_icon.svg`)
-- **Backups:** `{filename}_backup_{timestamp}.csv`
+```
+backend/
+├── main.py                   # FastAPI app entry point, CORS, router registration
+├── config.py                 # pydantic-settings: reads backend/.env for API keys
+├── database.py               # SQLAlchemy engine + session factory (SQLite)
+│
+├── models/                   # SQLAlchemy ORM models
+│   ├── card.py               # CollectionCard, WatchlistItem
+│   ├── owner.py              # Owner, Profile, OwnerPreferences
+│   └── settings.py           # AppSettings, ImportAmbiguity
+│
+├── schemas/                  # Pydantic request/response schemas
+│   ├── card.py
+│   ├── owner.py
+│   ├── search.py
+│   └── settings.py
+│
+├── routers/                  # FastAPI route handlers
+│   ├── search.py             # GET /api/search/{mtg|pokemon|baseball}
+│   ├── collection.py         # CRUD /api/collection/cards
+│   ├── watchlist.py          # CRUD /api/watchlist
+│   ├── sets.py               # GET /api/sets
+│   ├── owners.py             # CRUD /api/owners + /api/owners/{id}/profiles
+│   ├── settings.py           # GET/PUT /api/settings
+│   └── export.py             # POST /api/export/{csv|zip}, /api/backup
+│
+├── services/                 # Business logic
+│   ├── search_service.py     # Fallback chain orchestration
+│   ├── collection_service.py # Merge/duplicate/backup logic
+│   ├── import_service.py     # CSV import + ambiguity resolution
+│   └── stats_service.py      # Investment analysis aggregation
+│
+├── external/                 # External API clients
+│   ├── scryfall.py           # MTG search via Scryfall
+│   ├── pokemon_tcg.py        # Pokemon TCG API
+│   ├── ebay.py               # eBay sold listings
+│   └── sportscard_db.py      # SportsCardDatabase search
+│
+├── legacy/                   # Ported from original Streamlit app (no st.* calls)
+│   ├── constants.py
+│   ├── fallback_manager.py   # Offline CSV cache; stays as CSV, not in SQLite
+│   └── image_sources.py
+│
+├── migrations/
+│   ├── env.py                # Alembic environment
+│   ├── versions/             # Migration scripts
+│   └── csv_to_sqlite.py      # One-shot CSV → SQLite migration (idempotent)
+│
+├── fallback_data/            # Symlink / copy of root fallback_data/
+├── requirements.txt          # Python dependencies
+├── alembic.ini
+└── .env                      # Local secrets (gitignored — copy from .env.example)
+```
 
 ---
 
-## 🔄 **Development Workflow**
+## Frontend (`frontend/`)
 
-### **✅ Creating New Files:**
-1. **Documentation:** → `docs/NEW_FEATURE.md`
-2. **Utility Scripts:** → `utility/new_tool.py`
-3. **Core Features:** → Root directory (if main app logic)
-
-### **✅ File References:**
-- **Relative imports:** Use `from utility.tool import function`
-- **Documentation links:** Reference as `docs/FILENAME.md`
-- **Data paths:** Use `constants.py` for all data paths
-
-### **✅ Maintenance:**
-- **Clean docs:** Keep documentation current with code changes
-- **Utility updates:** Update related docs when modifying tools
-- **Backups:** Create backups before major data changes
-
----
-
-## 🎯 **Best Practices**
-
-### **📁 Organization:**
-- **Separation:** Keep core app separate from utilities
-- **Documentation:** Document all significant changes
-- **Naming:** Use consistent, descriptive naming
-
-### **🔧 Utilities:**
-- **Self-contained:** Each utility should work independently
-- **Documented:** Include usage instructions in docstrings
-- **Tested:** Test utilities on sample data before production
-
-### **📄 Documentation:**
-- **Current:** Keep docs in sync with code
-- **Comprehensive:** Include before/after examples
-- **Searchable:** Use consistent naming for easy reference
+```
+frontend/
+├── package.json
+├── vite.config.ts
+├── tsconfig.json
+└── src/
+    ├── App.tsx               # Router setup
+    ├── api/                  # Axios API client + per-domain functions
+    │   └── client.ts, search.ts, collection.ts, watchlist.ts,
+    │       sets.ts, owners.ts, settings.ts, export.ts
+    ├── store/
+    │   ├── ownerStore.ts     # Zustand: currentOwnerId, currentProfileId (localStorage)
+    │   └── settingsStore.ts  # Zustand: viewMode, cardsPerRow, imageWidth (localStorage)
+    ├── hooks/                # React Query hooks (useSearch, useCollection, etc.)
+    ├── pages/
+    │   ├── HomePage.tsx      # Search (MTG / Pokemon / Baseball tabs)
+    │   ├── CollectionPage.tsx
+    │   ├── SetsPage.tsx
+    │   ├── SettingsPage.tsx
+    │   └── HelpPage.tsx
+    ├── components/
+    │   ├── layout/           # Sidebar (owner/profile selector + nav), Layout shell
+    │   ├── search/           # Search forms + SearchResultsGrid
+    │   ├── collection/       # Collection tabs, AmbiguityResolver
+    │   ├── sets/             # SetsTable, SetFilters
+    │   ├── settings/         # Settings panels
+    │   └── shared/           # CardImage, VariantSelector, stat cards, etc.
+    └── types/                # TypeScript interfaces (card.ts, owner.ts, settings.ts)
+```
 
 ---
 
-## 📞 **Quick Reference**
+## Key Conventions
 
-### **🔧 Common Tasks:**
-- **Add utility:** → `utility/new_tool.py`
-- **Document feature:** → `docs/FEATURE.md`
-- **Fix CSV:** → `python utility/fix_mtg_csv.py`
-- **Update fields:** → `python utility/update_mtg_csv_fields.py`
-
-### **📁 Important Paths:**
-- **Main app:** `tcgpricetracker.py`
-- **Constants:** `constants.py`
-- **Data:** `fallback_data/`
-- **Docs:** `docs/`
-- **Utilities:** `utility/`
-
----
-
-**This structure ensures organized, maintainable, and scalable development!** 🚀
+| Item | Convention |
+|---|---|
+| Python files | `snake_case.py` |
+| React components | `PascalCase.tsx` |
+| API hooks | `use<Resource>.ts` |
+| Zustand stores | `<name>Store.ts` |
+| Documentation | `UPPER_SNAKE_CASE.md` in `docs/` |
+| Env secrets | `backend/.env` (never committed) |
+| DB file | `collectibles.db` at project root (never committed) |

@@ -5,6 +5,7 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv-backend/
 venv/
 env/
 
@@ -35,6 +36,7 @@ logs/
 collections/*.csv
 collections/**/*.csv
 fallback_data/
+collectibles.db
 
 # Misc
 node_modules/
@@ -44,3 +46,6 @@ utility/old/
 
 # App runtime preferences
 collections/owner_settings.json
+
+# claude
+.claude/

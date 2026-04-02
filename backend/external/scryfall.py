@@ -37,14 +37,16 @@ def search_mtg_scryfall(
             q = f"{q} cn:{str(collector_number).strip()}"
 
         url = "https://api.scryfall.com/cards/search"
+        # Exclude digital-only cards (MTG Arena / MTGO exclusives) from all queries
+        q = f"{q} -is:digital"
         attempts: List[Tuple[str, Dict]] = [
             ("primary", {"q": q, "order": "released", "unique": "prints"}),
         ]
         if card_name.strip():
-            attempts.append(("fuzzy", {"q": f'name~"{card_name.strip()}"', "order": "released", "unique": "prints"}))
+            attempts.append(("fuzzy", {"q": f'name~"{card_name.strip()}" -is:digital', "order": "released", "unique": "prints"}))
         token = card_name.strip().split(" ")[0] if card_name.strip() else ""
         if token:
-            attempts.append(("wildcard", {"q": f"name:{token}*", "order": "released", "unique": "prints"}))
+            attempts.append(("wildcard", {"q": f"name:{token}* -is:digital", "order": "released", "unique": "prints"}))
 
         items: List[Dict] = []
         which = "primary"
@@ -63,6 +65,10 @@ def search_mtg_scryfall(
         cards: List[Dict] = []
         for c in items:
             try:
+                # Skip digital-only cards (safety net in case the query filter misses any)
+                if c.get("digital"):
+                    continue
+
                 set_name = c.get("set_name", "")
                 released = c.get("released_at", "")
                 m4 = re.search(r"(19\d{2}|20\d{2})", str(released))
