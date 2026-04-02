@@ -1,0 +1,87 @@
+/* ── CSS Custom Properties (theme tokens) ───────────────────────────────────
+   All colours, fonts and layout values the app uses are declared here.
+   The appearanceStore writes overrides via document.documentElement.style
+   so every var below can be overridden at runtime without a page reload.
+   ────────────────────────────────────────────────────────────────────────── */
+:root {
+  /* Typography */
+  --font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  --font-size-base: 15px;
+
+  /* Page */
+  --bg: #f0f2fa;
+  --text: #1a1a2e;
+  --text-muted: #666;
+  --border: #e0e4ef;
+
+  /* Accent / links */
+  --accent: #4c6ef5;
+  --accent-hover: #3b5bdb;
+
+  /* Sidebar */
+  --sidebar-width: 220px;
+  --sidebar-bg: #1a1a2e;
+  --sidebar-border: #2d2d4e;
+  --sidebar-text: #c0c0d8;
+  --sidebar-text-muted: #888;
+  --sidebar-hover-bg: #2d2d4e;
+  --sidebar-active-bg: #3d3d6e;
+  --sidebar-active-text: #ffffff;
+
+  /* Cards / surfaces */
+  --surface: #ffffff;
+  --surface-alt: #f5f7fb;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Base resets ────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-family);
+  font-size: var(--font-size-base);
+  background-color: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+h1, h2, h3, h4 {
+  margin-top: 0;
+  color: var(--text);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 500;
+}
+a:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+button {
+  font-family: var(--font-family);
+  cursor: pointer;
+}
+
+input, select, textarea {
+  font-family: var(--font-family);
+}
+
+/* ── Scrollbars (webkit) ───────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
