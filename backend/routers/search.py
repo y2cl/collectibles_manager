@@ -19,7 +19,7 @@ def _to_card_result(card: dict) -> CardResult:
     return CardResult(
         game=card.get("game", ""),
         name=card.get("name", ""),
-        set=card.get("set", ""),
+        set_name=card.get("set", ""),
         set_code=card.get("set_code", ""),
         card_number=card.get("card_number", ""),
         year=card.get("year", ""),

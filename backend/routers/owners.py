@@ -7,8 +7,10 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models.owner import Owner, Profile, OwnerPreferences
+from ..models.card import CollectionCard
 from ..schemas.owner import (
-    OwnerCreate, OwnerRead, ProfileCreate, ProfileRead,
+    OwnerCreate, OwnerRead, OwnerUpdate,
+    ProfileCreate, ProfileRead, ProfileUpdate,
     OwnerPreferencesRead, OwnerPreferencesUpdate,
 )
 from ..services.collection_service import sanitize_owner_id, owner_folder_label, sanitize_profile_id
@@ -84,6 +86,13 @@ def create_profile(owner_id_slug: str, payload: ProfileCreate, db: Session = Dep
     return profile
 
 
+def _require_owner(db: Session, owner_id_slug: str) -> Owner:
+    owner = db.query(Owner).filter(Owner.owner_id == owner_id_slug).first()
+    if not owner:
+        raise HTTPException(status_code=404, detail="Owner not found")
+    return owner
+
+
 @router.get("/preferences", response_model=OwnerPreferencesRead)
 def get_preferences(db: Session = Depends(get_db)):
     return _get_or_create_preferences(db)
@@ -99,3 +108,44 @@ def update_preferences(payload: OwnerPreferencesUpdate, db: Session = Depends(ge
     db.commit()
     db.refresh(prefs)
     return prefs
+
+
+@router.put("/{owner_id_slug}", response_model=OwnerRead)
+def update_owner(owner_id_slug: str, payload: OwnerUpdate, db: Session = Depends(get_db)):
+    owner = _require_owner(db, owner_id_slug)
+    owner.label = payload.label
+    db.commit()
+    db.refresh(owner)
+    return owner
+
+
+@router.delete("/{owner_id_slug}", status_code=200)
+def delete_owner(owner_id_slug: str, db: Session = Depends(get_db)):
+    owner = _require_owner(db, owner_id_slug)
+    db.delete(owner)
+    db.commit()
+    return {"deleted": True}
+
+
+@router.put("/{owner_id_slug}/profiles/{profile_id}", response_model=ProfileRead)
+def update_profile(owner_id_slug: str, profile_id: str, payload: ProfileUpdate, db: Session = Depends(get_db)):
+    owner = _require_owner(db, owner_id_slug)
+    profile = db.query(Profile).filter_by(owner_id=owner.id, profile_id=profile_id).first()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    db.query(CollectionCard).filter_by(owner_id=owner.id, profile_id=profile_id).update({"profile_id": payload.profile_id})
+    profile.profile_id = payload.profile_id
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+@router.delete("/{owner_id_slug}/profiles/{profile_id}", status_code=200)
+def delete_profile(owner_id_slug: str, profile_id: str, db: Session = Depends(get_db)):
+    owner = _require_owner(db, owner_id_slug)
+    profile = db.query(Profile).filter_by(owner_id=owner.id, profile_id=profile_id).first()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    db.delete(profile)
+    db.commit()
+    return {"deleted": True}

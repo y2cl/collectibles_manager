@@ -51,3 +51,24 @@ export function useBulkDeleteCards() {
     },
   });
 }
+
+export function useBulkMoveCards() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ card_ids, target_owner_id, target_profile_id }: { card_ids: number[]; target_owner_id: string; target_profile_id: string }) =>
+      collectionApi.bulkMove(card_ids, target_owner_id, target_profile_id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['collection'] });
+    },
+  });
+}
+
+export function useBulkRefreshCards() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (card_ids: number[]) => collectionApi.bulkRefresh(card_ids),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['collection'] });
+    },
+  });
+}

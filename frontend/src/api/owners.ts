@@ -14,6 +14,18 @@ export const ownersApi = {
   createProfile: (owner_id: string, name: string) =>
     client.post<Profile>(`/api/owners/${owner_id}/profiles`, { name }).then((r) => r.data),
 
+  updateOwner: (owner_id: string, label: string) =>
+    client.put<Owner>(`/api/owners/${owner_id}`, { label }).then((r) => r.data),
+
+  deleteOwner: (owner_id: string) =>
+    client.delete(`/api/owners/${owner_id}`).then((r) => r.data),
+
+  updateProfile: (owner_id: string, profile_id: string, new_profile_id: string) =>
+    client.put<Profile>(`/api/owners/${owner_id}/profiles/${profile_id}`, { profile_id: new_profile_id }).then((r) => r.data),
+
+  deleteProfile: (owner_id: string, profile_id: string) =>
+    client.delete(`/api/owners/${owner_id}/profiles/${profile_id}`).then((r) => r.data),
+
   getPreferences: () =>
     client.get<OwnerPreferences>('/api/owners/preferences').then((r) => r.data),
 

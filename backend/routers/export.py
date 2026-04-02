@@ -79,6 +79,24 @@ def get_ambiguities(owner_id_slug: str, profile_id: str = Query("default"), db: 
     return [{"id": r.id, "row_data": r.row_data, "candidates": r.candidates} for r in rows]
 
 
+@router.delete("/import/ambiguities/{owner_id_slug}", status_code=200)
+def clear_ambiguities(owner_id_slug: str, profile_id: str = Query("default"), db: Session = Depends(get_db)):
+    owner = _require_owner(db, owner_id_slug)
+    deleted = (
+        db.query(ImportAmbiguity)
+        .filter(
+            ImportAmbiguity.owner_id == owner.id,
+            ImportAmbiguity.profile_id == profile_id,
+        )
+        .all()
+    )
+    count = len(deleted)
+    for row in deleted:
+        db.delete(row)
+    db.commit()
+    return {"cleared": count}
+
+
 @router.post("/import/resolve-ambiguities")
 def resolve_ambiguities_endpoint(payload: ResolveAmbiguitiesRequest, db: Session = Depends(get_db)):
     settings = _get_settings(db)
