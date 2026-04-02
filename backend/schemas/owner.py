@@ -35,6 +35,14 @@ class ProfileCreate(BaseModel):
     name: str
 
 
+class OwnerUpdate(BaseModel):
+    label: str
+
+
+class ProfileUpdate(BaseModel):
+    profile_id: str
+
+
 class OwnerPreferencesRead(BaseModel):
     default_owner_id: Optional[str] = None
     active_profiles: Dict[str, str] = {}  # { owner_id_slug: profile_id }

@@ -15,6 +15,9 @@ export const exportApi = {
   getAmbiguities: (owner_id: string, profile_id = 'default') =>
     client.get(`/api/import/ambiguities/${owner_id}`, { params: { profile_id } }).then((r) => r.data),
 
+  clearAmbiguities: (owner_id: string, profile_id = 'default') =>
+    client.delete(`/api/import/ambiguities/${owner_id}`, { params: { profile_id } }).then((r) => r.data),
+
   resolveAmbiguities: (owner_id: string, profile_id: string, resolutions: unknown[]) =>
     client.post('/api/import/resolve-ambiguities', { owner_id, profile_id, resolutions }).then((r) => r.data),
 

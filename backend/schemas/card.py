@@ -3,7 +3,7 @@ Pydantic schemas for cards, collection entries, and watchlist items.
 """
 from datetime import datetime
 from typing import Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 # ── Search result (returned by /api/search/*) ─────────────────────────────────
@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 class CardResult(BaseModel):
     game: str
     name: str
-    set_name: str = Field("", alias="set")
+    set_name: str = ""
     set_code: str = ""
     card_number: str = ""
     year: str = ""
@@ -108,6 +108,16 @@ class CollectionCardRead(CollectionCardBase):
 class BulkDeleteRequest(BaseModel):
     owner_id: str
     profile_id: str = "default"
+    card_ids: list[int]
+
+
+class BulkMoveRequest(BaseModel):
+    card_ids: list[int]
+    target_owner_id: str   # owner slug
+    target_profile_id: str = "default"
+
+
+class BulkRefreshRequest(BaseModel):
     card_ids: list[int]
 
 

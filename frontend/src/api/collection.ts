@@ -17,6 +17,12 @@ export const collectionApi = {
   bulkDelete: (owner_id: string, profile_id: string, card_ids: number[]) =>
     client.delete('/api/collection/cards', { data: { owner_id, profile_id, card_ids } }).then((r) => r.data),
 
+  bulkMove: (card_ids: number[], target_owner_id: string, target_profile_id: string) =>
+    client.post('/api/collection/cards/move', { card_ids, target_owner_id, target_profile_id }).then((r) => r.data),
+
+  bulkRefresh: (card_ids: number[]) =>
+    client.post('/api/collection/cards/refresh', { card_ids }).then((r) => r.data),
+
   stats: (owner_id: string, profile_id: string, game?: string) =>
     client.get('/api/stats', { params: { owner_id, profile_id, game } }).then((r) => r.data),
 };

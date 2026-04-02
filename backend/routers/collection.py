@@ -11,7 +11,8 @@ from ..models.owner import Owner
 from ..models.settings import AppSettings
 from ..schemas.card import (
     CollectionCardCreate, CollectionCardRead, CollectionCardUpdate,
-    BulkDeleteRequest, CollectionResponse, CollectionStats,
+    BulkDeleteRequest, BulkMoveRequest, BulkRefreshRequest,
+    CollectionResponse, CollectionStats,
 )
 from ..services.collection_service import add_card
 
@@ -127,3 +128,149 @@ def bulk_delete_cards(payload: BulkDeleteRequest, db: Session = Depends(get_db))
         db.delete(card)
     db.commit()
     return {"deleted_count": count}
+
+
+@router.post("/cards/move", status_code=200)
+def bulk_move_cards(payload: BulkMoveRequest, db: Session = Depends(get_db)):
+    target_owner = _require_owner(db, payload.target_owner_id)
+    cards = db.query(CollectionCard).filter(CollectionCard.id.in_(payload.card_ids)).all()
+    for card in cards:
+        card.owner_id = target_owner.id
+        card.profile_id = payload.target_profile_id
+    db.commit()
+    return {"moved": len(cards)}
+
+
+@router.post("/cards/refresh", status_code=200)
+def bulk_refresh_cards(payload: BulkRefreshRequest, db: Session = Depends(get_db)):
+    import requests as _requests
+
+    def _to_f(v) -> Optional[float]:
+        """Return float if v is a non-empty, non-zero value; else None."""
+        try:
+            f = float(v)
+            return f if f else None
+        except (TypeError, ValueError):
+            return None
+
+    def _refresh_mtg(card: CollectionCard) -> str:
+        """Fetch current prices from Scryfall for the card's stored variant."""
+        # Prefer exact set+collector lookup; fall back to fuzzy name search.
+        if card.set_code and card.card_number:
+            url = f"https://api.scryfall.com/cards/{card.set_code.lower()}/{card.card_number}"
+            resp = _requests.get(url, timeout=15)
+            if not resp.ok:
+                resp = _requests.get(
+                    "https://api.scryfall.com/cards/named",
+                    params={"fuzzy": card.name, **({"set": card.set_code} if card.set_code else {})},
+                    timeout=15,
+                )
+        else:
+            resp = _requests.get(
+                "https://api.scryfall.com/cards/named",
+                params={"fuzzy": card.name, **({"set": card.set_code} if card.set_code else {})},
+                timeout=15,
+            )
+
+        if not resp.ok:
+            return f"Scryfall {resp.status_code}: {resp.text[:120]}"
+
+        prices = resp.json().get("prices") or {}
+        usd        = _to_f(prices.get("usd"))
+        usd_foil   = _to_f(prices.get("usd_foil"))
+        usd_etched = _to_f(prices.get("usd_etched"))
+
+        # Always refresh all stored price fields
+        if usd:        card.price_usd        = usd
+        if usd_foil:   card.price_usd_foil   = usd_foil
+        if usd_etched: card.price_usd_etched  = usd_etched
+
+        # Set price_usd to the price for this card's specific variant so the
+        # collection table always shows the right market value.
+        variant = (card.variant or "nonfoil").lower()
+        if variant == "foil" and usd_foil:
+            card.price_usd = usd_foil
+        elif variant == "etched" and usd_etched:
+            card.price_usd = usd_etched
+        elif usd:
+            card.price_usd = usd
+
+        return ""
+
+    def _refresh_pokemon(card: CollectionCard) -> str:
+        """Fetch current prices from the Pokémon TCG API for the card's stored variant."""
+        params: dict = {"q": f'name:"{card.name}"'}
+        if card.set_code:
+            params["q"] += f" set.id:{card.set_code}"
+        if card.card_number:
+            params["q"] += f" number:{card.card_number}"
+
+        resp = _requests.get("https://api.pokemontcg.io/v2/cards", params=params, timeout=15)
+        if not resp.ok:
+            return f"PokémonTCG {resp.status_code}: {resp.text[:120]}"
+
+        items = resp.json().get("data") or []
+        if not items:
+            return "no results"
+
+        tcg = items[0].get("tcgplayer") or {}
+        prices_raw = tcg.get("prices") or {}
+
+        # Try the stored variant first (e.g. "holofoil", "normal", "reverseHolofoil")
+        variant = card.variant or ""
+        variant_entry = prices_raw.get(variant) or {}
+        price = _to_f(variant_entry.get("market")) or _to_f(variant_entry.get("mid"))
+
+        PKMN_VARIANT_ORDER = [
+            "normal", "holofoil", "reverseHolofoil",
+            "unlimited", "unlimitedHolofoil",
+            "1stEdition", "1stEditionHolofoil",
+        ]
+        matched_key = variant if variant_entry else next(
+            (k for k in PKMN_VARIANT_ORDER if prices_raw.get(k)), ""
+        )
+        if not price:
+            # Variant not found or has no price — fall back to best available market price
+            for key in PKMN_VARIANT_ORDER:
+                entry = prices_raw.get(key) or {}
+                p = _to_f(entry.get("market")) or _to_f(entry.get("mid"))
+                if p:
+                    price = p
+                    matched_key = key
+                    break
+
+        if price:
+            card.price_usd = price
+            # Also store low/mid/market from the matched variant
+            matched = prices_raw.get(matched_key) or {}
+            if isinstance(matched, dict):
+                if p := _to_f(matched.get("low")):    card.price_low    = p
+                if p := _to_f(matched.get("mid")):    card.price_mid    = p
+                if p := _to_f(matched.get("market")): card.price_market = p
+
+        return ""
+
+    updated = 0
+    errors: List[str] = []
+
+    for card_id in payload.card_ids:
+        card = db.query(CollectionCard).filter(CollectionCard.id == card_id).first()
+        if not card:
+            errors.append(f"Card {card_id} not found")
+            continue
+        try:
+            if card.game == "Magic: The Gathering":
+                err = _refresh_mtg(card)
+            elif card.game == "Pokémon":
+                err = _refresh_pokemon(card)
+            else:
+                continue  # Baseball refresh not supported yet
+            if err:
+                errors.append(f'"{card.name}" (id {card_id}): {err}')
+            else:
+                updated += 1
+        except Exception as e:
+            errors.append(f'"{card.name}" (id {card_id}): {e}')
+
+    db.commit()
+    return {"updated": updated, "errors": errors}

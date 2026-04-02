@@ -36,3 +36,47 @@ export function useCreateProfile() {
     },
   });
 }
+
+export function useUpdateOwner() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ owner_id, label }: { owner_id: string; label: string }) =>
+      ownersApi.updateOwner(owner_id, label),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['owners'] });
+    },
+  });
+}
+
+export function useDeleteOwner() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (owner_id: string) => ownersApi.deleteOwner(owner_id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['owners'] });
+    },
+  });
+}
+
+export function useUpdateProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ owner_id, profile_id, new_profile_id }: { owner_id: string; profile_id: string; new_profile_id: string }) =>
+      ownersApi.updateProfile(owner_id, profile_id, new_profile_id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['owners'] });
+      qc.invalidateQueries({ queryKey: ['collection'] });
+    },
+  });
+}
+
+export function useDeleteProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ owner_id, profile_id }: { owner_id: string; profile_id: string }) =>
+      ownersApi.deleteProfile(owner_id, profile_id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['owners'] });
+    },
+  });
+}
