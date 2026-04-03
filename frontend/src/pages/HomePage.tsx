@@ -1,20 +1,51 @@
-import { useState } from 'react';
-import { useMtgSearch, usePokemonSearch, useBaseballSearch, useForceRefreshSearch } from '../hooks/useSearch';
+import { useState, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMtgSearch, usePokemonSearch, useForceRefreshSearch } from '../hooks/useSearch';
+import { useAddCard } from '../hooks/useCollection';
+import { useOwnerStore } from '../store/ownerStore';
+import { lookupApi } from '../api/lookup';
+import { collectionApi } from '../api/collection';
+import ImagePicker from '../components/shared/ImagePicker';
+import { gradingLookupUrl } from '../utils/gradingLookup';
 import SearchResultsGrid from '../components/search/SearchResultsGrid';
 import { useSettingsStore } from '../store/settingsStore';
 
-type Game = 'mtg' | 'pokemon' | 'baseball';
+type Game = 'mtg' | 'pokemon' | 'sports' | 'collectibles';
 
 const TABS: { id: Game; label: string }[] = [
-  { id: 'mtg', label: '🧙 Magic: The Gathering' },
-  { id: 'pokemon', label: '⚡ Pokémon' },
-  { id: 'baseball', label: '⚾ Baseball Cards' },
+  { id: 'mtg',          label: '🧙 Magic: The Gathering' },
+  { id: 'pokemon',      label: '⚡ Pokémon' },
+  { id: 'sports',       label: '🏆 Sports Cards' },
+  { id: 'collectibles', label: '🎁 Collectibles' },
 ];
+
+const SPORTS = [
+  { value: 'baseball',   label: '⚾ Baseball' },
+  { value: 'football',   label: '🏈 Football' },
+  { value: 'basketball', label: '🏀 Basketball' },
+  { value: 'hockey',     label: '🏒 Hockey' },
+  { value: 'soccer',     label: '⚽ Soccer' },
+  { value: 'other',      label: '🃏 Other' },
+];
+
+const CONDITIONS = ['New', 'Like New', 'Very Good', 'Good', 'Acceptable', 'Poor'];
+
+const emptySportsForm = () => ({
+  sport: 'baseball', player: '', cardNum: '', set: '', insert: '', year: '', printRun: '',
+  gradingCompany: '', grade: '', serialNumber: '', signed: false, rc: false,
+  paid: '', value: '', imageUrl: '',
+});
+
+const emptyCollectiblesForm = () => ({
+  upc: '', name: '', series: '', manufacturer: '', year: '', condition: 'New', paid: '', value: '', imageUrl: '',
+});
 
 export default function HomePage() {
   const [game, setGame] = useState<Game>('mtg');
   const { cardsPerRow, imageWidth } = useSettingsStore();
+  const { currentOwnerId, currentProfileId } = useOwnerStore();
   const forceRefreshSearch = useForceRefreshSearch();
+  const addCard = useAddCard();
 
   // MTG state
   const [mtgName, setMtgName] = useState('');
@@ -28,51 +59,176 @@ export default function HomePage() {
   const [pkmnNum, setPkmnNum] = useState('');
   const [pkmnSearch, setPkmnSearch] = useState(false);
 
-  // Baseball state
-  const [bsPlayer, setBsPlayer] = useState('');
-  const [bsYear, setBsYear] = useState('');
-  const [bsTeam, setBsTeam] = useState('');
-  const [bsSet, setBsSet] = useState('');
-  const [bsNum, setBsNum] = useState('');
-  const [bsSearch, setBsSearch] = useState(false);
+  // Sports manual-add state
+  const [sp, setSp] = useState(emptySportsForm);
+  const [spMsg, setSpMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [psaLoading, setPsaLoading] = useState(false);
 
-  // Current params (needed for force-refresh callbacks)
-  const mtgParams = { name: mtgName, set_hint: mtgSet, collector_number: mtgNum };
+  // Collectibles manual-add state
+  const [col, setCol] = useState(emptyCollectiblesForm);
+  const [colMsg, setColMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [upcLoading, setUpcLoading] = useState(false);
+  const upcRef = useRef<HTMLInputElement>(null);
+  const qc = useQueryClient();
+
+  // Autocomplete suggestions via React Query (proper caching + error visibility)
+  const { data: suggestionsData } = useQuery({
+    queryKey: ['suggestions', 'sports', currentOwnerId, currentProfileId],
+    queryFn: () => collectionApi.suggestions(currentOwnerId!, currentProfileId || 'default', 'Sports Cards'),
+    enabled: game === 'sports' && !!currentOwnerId,
+    staleTime: 60 * 1000,
+  });
+  const spSuggestions = suggestionsData ?? { players: [], sets: [], inserts: [], grading_companies: [] };
+
+  const setSp_ = (field: keyof ReturnType<typeof emptySportsForm>) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+      const value = e.target.type === 'checkbox' ? (e.target as HTMLInputElement).checked : e.target.value;
+      setSp((prev) => ({ ...prev, [field]: value }));
+      setSpMsg(null);
+    };
+
+  const setCol_ = (field: keyof ReturnType<typeof emptyCollectiblesForm>) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+      setCol((prev) => ({ ...prev, [field]: e.target.value }));
+      setColMsg(null);
+    };
+
+  const mtgParams  = { name: mtgName, set_hint: mtgSet, collector_number: mtgNum };
   const pkmnParams = { name: pkmnName, set_hint: pkmnSet, number: pkmnNum };
-  const bsParams   = { player_name: bsPlayer, year: bsYear, team: bsTeam, set_name: bsSet, card_number: bsNum };
 
   const mtgResult  = useMtgSearch(mtgParams, mtgSearch);
   const pkmnResult = usePokemonSearch(pkmnParams, pkmnSearch);
-  const bsResult   = useBaseballSearch(bsParams, bsSearch);
+
+  const handleAddSportsCard = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!sp.player.trim()) { setSpMsg({ ok: false, text: 'Player name is required.' }); return; }
+    if (!currentOwnerId)   { setSpMsg({ ok: false, text: 'Select an owner first.' }); return; }
+    try {
+      await addCard.mutateAsync({
+        owner_id: currentOwnerId, profile_id: currentProfileId,
+        game: 'Sports Cards', sport: sp.sport,
+        name: sp.player.trim(), card_number: sp.cardNum.trim(),
+        set_name: sp.set.trim(), variant: sp.insert.trim(),
+        year: sp.year.trim(),
+        print_run: sp.printRun.trim() || undefined,
+        grading_company: sp.gradingCompany.trim() || undefined,
+        grade: sp.grade.trim() || undefined,
+        serial_number: sp.serialNumber.trim() || undefined,
+        signed: sp.signed ? 'true' : '',
+        rc: sp.rc || undefined,
+        image_url: sp.imageUrl || undefined,
+        paid: parseFloat(sp.paid) || 0,
+        price_usd: parseFloat(sp.value) || undefined,
+      });
+      setSpMsg({ ok: true, text: `Added ${sp.player} to collection!` });
+      setSp(emptySportsForm);
+      qc.invalidateQueries({ queryKey: ['suggestions', 'sports', currentOwnerId] });
+    } catch {
+      setSpMsg({ ok: false, text: 'Error adding card — try again.' });
+    }
+  };
+
+  const handlePsaLookup = async () => {
+    const cert = sp.serialNumber.trim();
+    if (!cert) return;
+    setPsaLoading(true);
+    setSpMsg(null);
+    try {
+      const result = await lookupApi.psaCert(cert);
+      setSp((prev) => ({
+        ...prev,
+        player:       result.player    || prev.player,
+        year:         result.year      || prev.year,
+        set:          result.set_name  || prev.set,
+        cardNum:      result.card_number || prev.cardNum,
+        grade:        result.grade     || prev.grade,
+        gradingCompany: prev.gradingCompany || 'PSA',
+      }));
+      setSpMsg({ ok: true, text: `PSA cert found: ${result.subject || result.player}` });
+    } catch {
+      setSpMsg({ ok: false, text: 'PSA cert not found — check the number and try again.' });
+    } finally {
+      setPsaLoading(false);
+    }
+  };
+
+  const handleUpcLookup = async () => {
+    const code = col.upc.trim();
+    if (!code) return;
+    setUpcLoading(true);
+    setColMsg(null);
+    try {
+      const result = await lookupApi.upc(code);
+      setCol((prev) => ({
+        ...prev,
+        name:         result.name         || prev.name,
+        manufacturer: result.manufacturer || prev.manufacturer,
+        value:        result.price != null ? String(result.price) : prev.value,
+      }));
+      setColMsg({ ok: true, text: 'Auto-filled from barcode lookup.' });
+    } catch {
+      setColMsg({ ok: false, text: 'Barcode not found — fill in details manually.' });
+    } finally {
+      setUpcLoading(false);
+    }
+  };
+
+  const handleAddCollectible = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!col.name.trim()) { setColMsg({ ok: false, text: 'Name is required.' }); return; }
+    if (!currentOwnerId)  { setColMsg({ ok: false, text: 'Select an owner first.' }); return; }
+    try {
+      await addCard.mutateAsync({
+        owner_id: currentOwnerId, profile_id: currentProfileId,
+        game: 'Collectibles',
+        name:         col.name.trim(),
+        set_name:     col.series.trim(),
+        manufacturer: col.manufacturer.trim(),
+        year:         col.year.trim(),
+        variant:      col.condition,
+        upc:          col.upc.trim() || undefined,
+        image_url:    col.imageUrl || undefined,
+        paid:         parseFloat(col.paid) || 0,
+        price_usd:    parseFloat(col.value) || undefined,
+      });
+      setColMsg({ ok: true, text: `Added "${col.name}" to collection!` });
+      setCol(emptyCollectiblesForm);
+    } catch {
+      setColMsg({ ok: false, text: 'Error adding item — try again.' });
+    }
+  };
 
   const inputStyle: React.CSSProperties = {
-    padding: '6px 10px', borderRadius: 4, border: '1px solid #ccc',
-    fontSize: '0.9rem', flex: 1,
+    padding: '6px 10px', borderRadius: 4, border: '1px solid #ccc', fontSize: '0.9rem', flex: 1,
+  };
+  const labelStyle: React.CSSProperties = {
+    display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.8rem', color: '#555', flex: 1,
   };
   const btnStyle: React.CSSProperties = {
     padding: '6px 16px', background: '#4c6ef5', color: '#fff',
     border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600,
   };
+  const selectStyle: React.CSSProperties = {
+    padding: '6px 10px', borderRadius: 4, border: '1px solid #ccc',
+    fontSize: '0.9rem', background: '#fff', cursor: 'pointer', width: '100%',
+  };
 
   return (
     <div>
-      <h1 style={{ marginTop: 0 }}>🔍 Search Cards</h1>
+      <h1 style={{ marginTop: 0 }}>➕ Add to Collection</h1>
 
-      {/* Game tab bar */}
-      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem', borderBottom: '2px solid #e0e4ef', paddingBottom: '0.5rem' }}>
+      {/* Tab bar */}
+      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem', borderBottom: '2px solid #e0e4ef', paddingBottom: '0.5rem', flexWrap: 'wrap' }}>
         {TABS.map(({ id, label }) => (
           <button
             key={id}
             onClick={() => setGame(id)}
             style={{
-              padding: '6px 16px',
-              borderRadius: '4px 4px 0 0',
-              border: 'none',
+              padding: '6px 16px', borderRadius: '4px 4px 0 0', border: 'none',
               background: game === id ? '#4c6ef5' : '#f0f2fa',
               color: game === id ? '#fff' : '#333',
               fontWeight: game === id ? 700 : 400,
-              cursor: 'pointer',
-              fontSize: '0.9rem',
+              cursor: 'pointer', fontSize: '0.9rem',
             }}
           >
             {label}
@@ -112,27 +268,248 @@ export default function HomePage() {
         </form>
       )}
 
-      {/* Baseball Search */}
-      {game === 'baseball' && (
-        <form
-          onSubmit={(e) => { e.preventDefault(); setBsSearch(true); }}
-          style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: '1.5rem' }}
-        >
-          <input style={inputStyle} placeholder="Player name *" value={bsPlayer}
-            onChange={(e) => { setBsPlayer(e.target.value); setBsSearch(false); }} />
-          <input style={{ ...inputStyle, flex: 0, width: 80 }} placeholder="Year" value={bsYear}
-            onChange={(e) => { setBsYear(e.target.value); setBsSearch(false); }} />
-          <input style={{ ...inputStyle, flex: 0, width: 100 }} placeholder="Team" value={bsTeam}
-            onChange={(e) => { setBsTeam(e.target.value); setBsSearch(false); }} />
-          <input style={{ ...inputStyle, flex: 0, width: 120 }} placeholder="Set name" value={bsSet}
-            onChange={(e) => { setBsSet(e.target.value); setBsSearch(false); }} />
-          <input style={{ ...inputStyle, flex: 0, width: 80 }} placeholder="Card #" value={bsNum}
-            onChange={(e) => { setBsNum(e.target.value); setBsSearch(false); }} />
-          <button type="submit" style={btnStyle}>Search Baseball</button>
-        </form>
+      {/* Sports Cards — manual entry */}
+      {game === 'sports' && (
+        <div style={{ maxWidth: 860 }}>
+          <form onSubmit={handleAddSportsCard} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+            {/* Row: Sport */}
+            <label style={{ ...labelStyle, maxWidth: 260 }}>
+              Sport
+              <select style={selectStyle} value={sp.sport} onChange={setSp_('sport')}>
+                {SPORTS.map(({ value, label }) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+            </label>
+
+            {/* Datalists for autocomplete */}
+            <datalist id="sp-players">{spSuggestions.players.map(v => <option key={v} value={v} />)}</datalist>
+            <datalist id="sp-sets">{spSuggestions.sets.map(v => <option key={v} value={v} />)}</datalist>
+            <datalist id="sp-inserts">{spSuggestions.inserts.map(v => <option key={v} value={v} />)}</datalist>
+            <datalist id="sp-grading">{spSuggestions.grading_companies.map(v => <option key={v} value={v} />)}</datalist>
+
+            {/* Row: Player Name | Card # */}
+            <div style={{ display: 'flex', gap: 16 }}>
+              <label style={labelStyle}>
+                Player Name *
+                <input list="sp-players" style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={sp.player} onChange={setSp_('player')} placeholder="e.g. Mike Trout" />
+              </label>
+              <label style={{ ...labelStyle, flex: '0 0 130px' }}>
+                Card #
+                <input style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={sp.cardNum} onChange={setSp_('cardNum')} placeholder="e.g. 123" />
+              </label>
+            </div>
+
+            {/* Row: Year | Set | Insert | Serial # */}
+            <div style={{ display: 'flex', gap: 16 }}>
+              <label style={{ ...labelStyle, flex: '0 0 100px' }}>
+                Year
+                <input style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={sp.year} onChange={setSp_('year')} placeholder="e.g. 2024" />
+              </label>
+              <label style={labelStyle}>
+                Set
+                <input list="sp-sets" style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={sp.set} onChange={setSp_('set')} placeholder="e.g. 2024 Topps Series 1" />
+              </label>
+              <label style={labelStyle}>
+                Insert
+                <input list="sp-inserts" style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={sp.insert} onChange={setSp_('insert')} placeholder="e.g. Refractor, Auto, Base" />
+              </label>
+              <label style={{ ...labelStyle, flex: '0 0 110px' }}>
+                Serial #
+                <input style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={sp.printRun} onChange={setSp_('printRun')} placeholder="e.g. 23/99" />
+              </label>
+            </div>
+
+            {/* Row: Grading Company | Grade | Cert. Number | Signed */}
+            <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end' }}>
+              <label style={labelStyle}>
+                Grading Company
+                <input list="sp-grading" style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={sp.gradingCompany} onChange={setSp_('gradingCompany')} placeholder="e.g. PSA, BGS, SGC" />
+              </label>
+              <label style={{ ...labelStyle, flex: '0 0 100px' }}>
+                Grade
+                <input style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={sp.grade} onChange={setSp_('grade')} placeholder="e.g. 9.5" />
+              </label>
+              <label style={{ ...labelStyle, flex: '0 0 140px' }}>
+                Cert. Number
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={sp.serialNumber} onChange={setSp_('serialNumber')} placeholder="e.g. 12345678" />
+                  {sp.gradingCompany.toLowerCase().includes('psa') && sp.serialNumber.trim() && (
+                    <button
+                      type="button"
+                      onClick={handlePsaLookup}
+                      disabled={psaLoading}
+                      style={{ padding: '6px 10px', borderRadius: 4, border: '1px solid #4c6ef5', background: '#4c6ef5', color: '#fff', fontSize: '0.8rem', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                    >
+                      {psaLoading ? '…' : 'Lookup'}
+                    </button>
+                  )}
+                </div>
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8, fontSize: '0.9rem', color: '#555', paddingBottom: 7, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                <input type="checkbox" checked={sp.signed} onChange={setSp_('signed')} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+                Signed
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8, fontSize: '0.9rem', color: '#555', paddingBottom: 7, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                <input type="checkbox" checked={sp.rc} onChange={setSp_('rc')} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+                RC
+              </label>
+            </div>
+            {gradingLookupUrl(sp.gradingCompany, sp.serialNumber) && (
+              <div style={{ fontSize: '0.82rem' }}>
+                <a
+                  href={gradingLookupUrl(sp.gradingCompany, sp.serialNumber)!}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: '#4c6ef5', textDecoration: 'none' }}
+                >
+                  🔍 Look up cert #{sp.serialNumber} on {sp.gradingCompany} →
+                </a>
+              </div>
+            )}
+
+            {/* Row: Price Paid | Value */}
+            <div style={{ display: 'flex', gap: 16 }}>
+              <label style={{ ...labelStyle, flex: '0 0 140px' }}>
+                Price Paid ($)
+                <input type="number" min={0} step={0.01} style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={sp.paid} onChange={setSp_('paid')} placeholder="0.00" />
+              </label>
+              <label style={{ ...labelStyle, flex: '0 0 140px' }}>
+                Value ($)
+                <input type="number" min={0} step={0.01} style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={sp.value} onChange={setSp_('value')} placeholder="0.00" />
+              </label>
+              <div style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: 7 }}>
+                <span style={{ fontSize: '0.75rem', color: '#aaa' }}>eBay lookup coming soon</span>
+              </div>
+            </div>
+
+            {/* Image search / upload */}
+            <div>
+              <span style={{ fontSize: '0.8rem', color: '#555', display: 'block', marginBottom: 6 }}>Image</span>
+              <ImagePicker
+                query={[sp.player, sp.year, sp.set, sp.sport, 'card'].filter(Boolean).join(' ')}
+                selectedUrl={sp.imageUrl}
+                onSelect={(url) => setSp((prev) => ({ ...prev, imageUrl: url }))}
+              />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingTop: 4 }}>
+              <button type="submit" style={btnStyle} disabled={addCard.isPending}>
+                {addCard.isPending ? 'Adding…' : '+ Add to Collection'}
+              </button>
+              {spMsg && <span style={{ fontSize: '0.85rem', color: spMsg.ok ? '#2a7a2a' : '#c00' }}>{spMsg.text}</span>}
+            </div>
+          </form>
+        </div>
       )}
 
-      {/* Results */}
+      {/* Collectibles — manual entry with UPC lookup */}
+      {game === 'collectibles' && (
+        <div style={{ maxWidth: 560 }}>
+          <p style={{ margin: '0 0 1rem', color: '#666', fontSize: '0.9rem' }}>
+            Scan or enter a barcode to auto-fill details, or fill in manually.
+          </p>
+          <form onSubmit={handleAddCollectible} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+
+            {/* UPC barcode lookup */}
+            <label style={labelStyle}>
+              Barcode (UPC/EAN)
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  ref={upcRef}
+                  style={{ ...inputStyle, flex: 'unset', flexGrow: 1 }}
+                  value={col.upc}
+                  onChange={setCol_('upc')}
+                  placeholder="e.g. 035112482597"
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleUpcLookup(); } }}
+                />
+                <button
+                  type="button"
+                  onClick={handleUpcLookup}
+                  disabled={upcLoading || !col.upc.trim()}
+                  style={{ ...btnStyle, background: '#6c757d', whiteSpace: 'nowrap' }}
+                >
+                  {upcLoading ? 'Looking up…' : '🔍 Lookup'}
+                </button>
+              </div>
+              {colMsg && (
+                <span style={{ fontSize: '0.8rem', color: colMsg.ok ? '#2a7a2a' : '#888', marginTop: 2 }}>
+                  {colMsg.text}
+                </span>
+              )}
+            </label>
+
+            <div style={{ borderTop: '1px solid #eee', paddingTop: 12 }} />
+
+            {/* Name */}
+            <label style={labelStyle}>
+              Name *
+              <input style={{ ...inputStyle, flex: 'unset' }} value={col.name} onChange={setCol_('name')} placeholder="e.g. Optimus Prime G1 Reissue" />
+            </label>
+
+            {/* Line / Series */}
+            <label style={labelStyle}>
+              Line / Series
+              <input style={{ ...inputStyle, flex: 'unset' }} value={col.series} onChange={setCol_('series')} placeholder="e.g. Transformers Studio Series" />
+            </label>
+
+            {/* Manufacturer */}
+            <label style={labelStyle}>
+              Manufacturer
+              <input style={{ ...inputStyle, flex: 'unset' }} value={col.manufacturer} onChange={setCol_('manufacturer')} placeholder="e.g. Hasbro" />
+            </label>
+
+            {/* Year */}
+            <label style={labelStyle}>
+              Year
+              <input style={{ ...inputStyle, flex: 'unset', width: 100 }} value={col.year} onChange={setCol_('year')} placeholder="e.g. 2023" />
+            </label>
+
+            {/* Condition */}
+            <label style={labelStyle}>
+              Condition
+              <select style={selectStyle} value={col.condition} onChange={setCol_('condition')}>
+                {CONDITIONS.map((c) => <option key={c}>{c}</option>)}
+              </select>
+            </label>
+
+            {/* Price Paid / Value */}
+            <div style={{ display: 'flex', gap: 16 }}>
+              <label style={labelStyle}>
+                Price Paid ($)
+                <input type="number" min={0} step={0.01} style={{ ...inputStyle, flex: 'unset', width: 120 }} value={col.paid} onChange={setCol_('paid')} placeholder="0.00" />
+              </label>
+              <label style={labelStyle}>
+                Value ($)
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <input type="number" min={0} step={0.01} style={{ ...inputStyle, flex: 'unset', width: 120 }} value={col.value} onChange={setCol_('value')} placeholder="0.00" />
+                  <span style={{ fontSize: '0.75rem', color: '#aaa', whiteSpace: 'nowrap' }}>eBay lookup soon</span>
+                </div>
+              </label>
+            </div>
+
+            {/* Image picker */}
+            <div>
+              <span style={{ fontSize: '0.8rem', color: '#555', display: 'block', marginBottom: 6 }}>Image</span>
+              <ImagePicker
+                query={[col.name, col.manufacturer, col.series, 'collectible'].filter(Boolean).join(' ')}
+                selectedUrl={col.imageUrl}
+                onSelect={(url) => setCol((prev) => ({ ...prev, imageUrl: url }))}
+              />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <button type="submit" style={btnStyle} disabled={addCard.isPending}>
+                {addCard.isPending ? 'Adding…' : '+ Add to Collection'}
+              </button>
+            </div>
+
+          </form>
+        </div>
+      )}
+
+      {/* Search Results */}
       {game === 'mtg' && (
         <SearchResultsGrid
           cards={mtgResult.data?.cards ?? []}
@@ -153,17 +530,6 @@ export default function HomePage() {
           cardsPerRow={cardsPerRow}
           imageWidth={imageWidth}
           onRefreshFromApi={() => forceRefreshSearch('pokemon', pkmnParams)}
-        />
-      )}
-      {game === 'baseball' && (
-        <SearchResultsGrid
-          cards={bsResult.data?.cards ?? []}
-          source={bsResult.data?.source}
-          total={bsResult.data?.total}
-          loading={bsResult.isLoading}
-          cardsPerRow={cardsPerRow}
-          imageWidth={imageWidth}
-          onRefreshFromApi={() => forceRefreshSearch('baseball', bsParams)}
         />
       )}
     </div>

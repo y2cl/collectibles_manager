@@ -207,8 +207,9 @@ def search_pokemon(
     return [], 0, 0, "No results"
 
 
-def search_baseball(
+def search_sports(
     player_name: str,
+    sport: str = "baseball",
     year: str = "",
     team: str = "",
     set_name: str = "",
@@ -217,21 +218,22 @@ def search_baseball(
     force_refresh: bool = False,
 ) -> Tuple[List[Dict], int, int, str]:
     """
-    Baseball search — eBay first, then SportsCardDatabase.
-    (Baseball has no local CSV cache, so force_refresh has no effect here.)
+    Sports card search — eBay first, then SportsCardDatabase.
+    (Sports cards have no local CSV cache, so force_refresh has no effect here.)
     """
     from ..config import settings as app_settings
 
     cfg = _get_api_config(db) if db else {}
     ebay_env = cfg.get("last_ebay_env", "Sandbox")
 
-    if cfg.get("ebay_enabled", True):
+    if cfg.get("ebay_enabled", True) or cfg.get("ebay_sports_enabled", True):
         ebay_key = (
             app_settings.ebay_app_id if ebay_env == "Production" else app_settings.ebay_app_id_sbx
         )
-        from ..external.ebay import search_ebay_baseball
-        cards, shown, total, source = search_ebay_baseball(
+        from ..external.ebay import search_ebay_sports
+        cards, shown, total, source = search_ebay_sports(
             player_name, year, team, set_name, card_number,
+            sport=sport,
             ebay_app_id=ebay_key,
             ebay_env=ebay_env,
         )
@@ -243,3 +245,25 @@ def search_baseball(
         return search_sportscard_database(player_name, year, set_name, card_number)
 
     return [], 0, 0, "No results"
+
+
+# Backwards-compatible alias
+def search_baseball(
+    player_name: str,
+    year: str = "",
+    team: str = "",
+    set_name: str = "",
+    card_number: str = "",
+    db: Optional[Session] = None,
+    force_refresh: bool = False,
+) -> Tuple[List[Dict], int, int, str]:
+    return search_sports(
+        player_name=player_name,
+        sport="baseball",
+        year=year,
+        team=team,
+        set_name=set_name,
+        card_number=card_number,
+        db=db,
+        force_refresh=force_refresh,
+    )

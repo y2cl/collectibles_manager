@@ -23,7 +23,7 @@ def _create_mock_cards(player_name: str, year: str, set_name: str, card_number: 
             "price_usd": 0.0,
             "image_url": "",
             "link": "",
-            "game": "Baseball Cards",
+            "game": "Sports Cards",
             "quantity": 1,
             "variant": "",
             "source": source,

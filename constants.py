@@ -16,7 +16,17 @@ DEFAULT_RESULTS_PER_PAGE = 20
 GAMES = {
     "mtg": "Magic: The Gathering",
     "pokemon": "Pokémon",
-    "baseball": "Baseball Cards"
+    "sports": "Sports Cards",
+    "collectibles": "Collectibles",
+}
+
+SPORTS_CARD_CATEGORIES = {
+    "baseball": "212",
+    "football": "214",
+    "basketball": "217",
+    "hockey": "216",
+    "soccer": "218",
+    "other": "219",
 }
 
 # API source constants
@@ -55,26 +65,19 @@ API_SOURCES = {
     },
     "sportscarddatabase": {
         "name": "SportsCardDatabase.com",
-        "game": "baseball",
+        "game": "sports",
         "free": True,
         "enabled_key": "sportscarddatabase_enabled",
-        "description": "Free baseball card database with comprehensive collection"
+        "description": "Free sports card database with comprehensive collection"
     },
-    "sportscardspro": {
-        "name": "SportCardsPro.com",
-        "game": "baseball",
-        "free": True,
-        "enabled_key": "sportscardspro_enabled",
-        "description": "Baseball card price guide with images and market data"
-    },
-    "ebay_baseball": {
-        "name": "eBay Baseball Cards",
-        "game": "baseball",
+    "ebay_sports": {
+        "name": "eBay Sports Cards",
+        "game": "sports",
         "free": False,
-        "enabled_key": "ebay_baseball_enabled",
+        "enabled_key": "ebay_sports_enabled",
         "secret_key": "EBAY_APP_ID",
         "sandbox_key": "EBAY_APP_ID_SBX",
-        "description": "eBay marketplace for baseball cards with real listings"
+        "description": "eBay marketplace for sports cards with real listings"
     }
 }
 

@@ -39,6 +39,7 @@ export default function AddToCollectionButton({ card, selectedVariant, onVariant
       owner_id:        currentOwnerId,
       profile_id:      currentProfileId,
       game:            card.game,
+      sport:           card.sport,
       name:            card.name,
       set_name:        card.set_name,
       set_code:        card.set_code,

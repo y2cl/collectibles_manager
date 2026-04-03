@@ -106,37 +106,10 @@ class SportLotsImageSource(ImageSource):
             return ""
 
 
-class SportCardsProImageSource(ImageSource):
-    def __init__(self):
-        super().__init__(
-            name="SportCardsPro",
-            base_url="https://www.sportscardspro.com",
-            description="SportCardsPro card database images",
-        )
-
-    def search_image(self, player_name: str, year: str, set_name: str, card_number: str) -> str:
-        try:
-            search_query = f"{player_name} {year} {set_name}".replace(" ", "+")
-            search_url = f"{self.base_url}/search?q={search_query}"
-            response = requests.get(search_url, timeout=30)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
-            for img in soup.find_all("img"):
-                src = img.get("src", "")
-                alt = img.get("alt", "").lower()
-                if player_name.lower() in alt and ("card" in src.lower() or "image" in src.lower()):
-                    return (self.base_url + src) if src.startswith("/") else src
-            return ""
-        except Exception as e:
-            print(f"⚠️ SportCardsProImageSource Error: {e}")
-            return ""
-
-
 class ImageSourceManager:
     def __init__(self):
         self.sources = [
             eBayImageSource(),
-            SportCardsProImageSource(),
             SportLotsImageSource(),
         ]
 

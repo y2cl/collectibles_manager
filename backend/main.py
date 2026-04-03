@@ -48,6 +48,8 @@ from .routers.owners import router as owners_router
 from .routers.settings import router as settings_router
 from .routers.sets import router as sets_router
 from .routers.export import router as export_router
+from .routers.lookup import router as lookup_router
+from .routers.changelog import router as changelog_router
 
 app.include_router(search_router)
 app.include_router(collection_router)
@@ -56,6 +58,8 @@ app.include_router(owners_router)
 app.include_router(settings_router)
 app.include_router(sets_router)
 app.include_router(export_router)
+app.include_router(lookup_router)
+app.include_router(changelog_router)
 
 
 @app.get("/api/health")

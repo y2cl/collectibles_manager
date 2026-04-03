@@ -60,13 +60,6 @@ API_SOURCES = {
         "enabled_key": "sportscarddatabase_enabled",
         "description": "Free baseball card database with comprehensive collection"
     },
-    "sportscardspro": {
-        "name": "SportCardsPro.com",
-        "game": "baseball",
-        "free": True,
-        "enabled_key": "sportscardspro_enabled",
-        "description": "Baseball card price guide with images and market data"
-    },
     "ebay_baseball": {
         "name": "eBay Baseball Cards",
         "game": "baseball",

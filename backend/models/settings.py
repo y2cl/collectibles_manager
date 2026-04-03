@@ -23,7 +23,7 @@ class AppSettings(Base):
     # API source toggles + eBay env stored as JSON to avoid extra table
     # Keys mirror the original api_config.json fields:
     # scryfall_enabled, pokemontcg_enabled, justtcg_enabled, pokemonpublic_enabled,
-    # fallback_enabled, ebay_enabled, sportscarddatabase_enabled, sportscardspro_enabled,
+    # fallback_enabled, ebay_enabled, sportscarddatabase_enabled,
     # last_ebay_env, pokemontcg_api
     api_source_config = Column(JSON, default=dict)
 

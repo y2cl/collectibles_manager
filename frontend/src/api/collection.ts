@@ -25,4 +25,9 @@ export const collectionApi = {
 
   stats: (owner_id: string, profile_id: string, game?: string) =>
     client.get('/api/stats', { params: { owner_id, profile_id, game } }).then((r) => r.data),
+
+  suggestions: (owner_id: string, profile_id: string, game: string) =>
+    client.get<{ players: string[]; sets: string[]; inserts: string[]; grading_companies: string[] }>(
+      '/api/collection/suggestions', { params: { owner_id, profile_id, game } }
+    ).then((r) => r.data),
 };

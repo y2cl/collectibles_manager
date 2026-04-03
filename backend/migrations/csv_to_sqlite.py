@@ -81,8 +81,8 @@ def game_from_filename(filename: str) -> str:
     fn = filename.lower()
     if "pokemon" in fn:
         return "Pokémon"
-    if "baseball" in fn:
-        return "Baseball Cards"
+    if "baseball" in fn or "sports" in fn:
+        return "Sports Cards"
     return "Magic: The Gathering"
 
 

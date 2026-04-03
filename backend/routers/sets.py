@@ -426,6 +426,267 @@ def sync_pokemon_sets():
     }
 
 
+# ---------------------------------------------------------------------------
+# Sports Card Set Catalog — CRUD
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel as _BaseModel
+from typing import Optional as _Optional
+
+
+class SportsCatalogCreate(_BaseModel):
+    owner_id: str
+    profile_id: str = "default"
+    sport: _Optional[str] = None
+    set_name: str
+    insert_name: str = ""
+    year: str = ""
+    card_count: _Optional[int] = None
+    link: str = ""
+    notes: str = ""
+
+
+class SportsCatalogUpdate(_BaseModel):
+    sport: _Optional[str] = None
+    set_name: _Optional[str] = None
+    insert_name: _Optional[str] = None
+    year: _Optional[str] = None
+    card_count: _Optional[int] = None
+    link: _Optional[str] = None
+    notes: _Optional[str] = None
+
+
+@router.get("/sports-catalog")
+def get_sports_catalog(
+    owner_id: str = Query(...),
+    profile_id: str = Query("default"),
+    sport: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """List all user-defined sports card sets/inserts for an owner."""
+    from ..models.sports_set import SportsCardSet
+    from ..models.owner import Owner
+
+    owner = db.query(Owner).filter(Owner.owner_id == owner_id).first()
+    if not owner:
+        return {"sets": []}
+
+    q = db.query(SportsCardSet).filter(
+        SportsCardSet.owner_id == owner.id,
+        SportsCardSet.profile_id == profile_id,
+    )
+    if sport and sport != "all":
+        q = q.filter(SportsCardSet.sport == sport)
+
+    rows = q.order_by(SportsCardSet.year.desc(), SportsCardSet.set_name).all()
+    return {"sets": [
+        {
+            "id": r.id, "sport": r.sport, "set_name": r.set_name,
+            "insert_name": r.insert_name, "year": r.year,
+            "card_count": r.card_count, "link": r.link, "notes": r.notes,
+        }
+        for r in rows
+    ]}
+
+
+@router.post("/sports-catalog", status_code=201)
+def create_sports_set(payload: SportsCatalogCreate, db: Session = Depends(get_db)):
+    """Create a new sports card set/insert catalog entry."""
+    from ..models.sports_set import SportsCardSet
+    from ..models.owner import Owner
+
+    owner = db.query(Owner).filter(Owner.owner_id == payload.owner_id).first()
+    if not owner:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Owner not found")
+
+    entry = SportsCardSet(
+        owner_id=owner.id,
+        profile_id=payload.profile_id,
+        sport=payload.sport,
+        set_name=payload.set_name,
+        insert_name=payload.insert_name,
+        year=payload.year,
+        card_count=payload.card_count,
+        link=payload.link,
+        notes=payload.notes,
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    return {
+        "id": entry.id, "sport": entry.sport, "set_name": entry.set_name,
+        "insert_name": entry.insert_name, "year": entry.year,
+        "card_count": entry.card_count, "link": entry.link, "notes": entry.notes,
+    }
+
+
+@router.patch("/sports-catalog/{set_id}")
+def update_sports_set(set_id: int, payload: SportsCatalogUpdate, db: Session = Depends(get_db)):
+    """Update a sports card set/insert catalog entry."""
+    from ..models.sports_set import SportsCardSet
+    from fastapi import HTTPException
+
+    entry = db.query(SportsCardSet).filter(SportsCardSet.id == set_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Set not found")
+
+    for field, value in payload.model_dump(exclude_none=True).items():
+        setattr(entry, field, value)
+
+    db.commit()
+    db.refresh(entry)
+    return {
+        "id": entry.id, "sport": entry.sport, "set_name": entry.set_name,
+        "insert_name": entry.insert_name, "year": entry.year,
+        "card_count": entry.card_count, "link": entry.link, "notes": entry.notes,
+    }
+
+
+@router.delete("/sports-catalog/{set_id}", status_code=200)
+def delete_sports_set(set_id: int, db: Session = Depends(get_db)):
+    """Delete a sports card set/insert catalog entry."""
+    from ..models.sports_set import SportsCardSet
+    from fastapi import HTTPException
+
+    entry = db.query(SportsCardSet).filter(SportsCardSet.id == set_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Set not found")
+
+    db.delete(entry)
+    db.commit()
+    return {"deleted": True}
+
+
+@router.get("/sports-summary")
+def get_sports_summary(
+    owner_id: str = Query(...),
+    profile_id: str = Query("default"),
+    sport: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Aggregate Sports Cards from the collection into sets, with inserts as sub-rows.
+    Returns a list of sets, each with a rollup of owned/paid/value and a list of insert rows.
+    """
+    from ..models.card import CollectionCard
+    from ..models.owner import Owner
+    from ..models.sports_set import SportsCardSet
+    from collections import defaultdict
+
+    owner = db.query(Owner).filter(Owner.owner_id == owner_id).first()
+    if not owner:
+        return {"sets": []}
+
+    # ── Load catalog entries (user-defined sets) ────────────────────────────
+    cat_q = db.query(SportsCardSet).filter(
+        SportsCardSet.owner_id == owner.id,
+        SportsCardSet.profile_id == profile_id,
+    )
+    if sport and sport != "all":
+        cat_q = cat_q.filter(SportsCardSet.sport == sport)
+
+    # Index catalog by (set_name_lower, year, insert_name_lower)
+    catalog: Dict = {}
+    for c in cat_q.all():
+        key = (c.set_name.strip().lower(), c.year or "", (c.insert_name or "").strip().lower())
+        catalog[key] = c
+
+    # ── Load collection cards ───────────────────────────────────────────────
+    q = db.query(CollectionCard).filter(
+        CollectionCard.owner_id == owner.id,
+        CollectionCard.profile_id == profile_id,
+        CollectionCard.game == "Sports Cards",
+    )
+    if sport and sport != "all":
+        q = q.filter(CollectionCard.sport == sport)
+
+    cards = q.all()
+
+    # Group by (set_name, year) → then by variant (insert)
+    sets_map: Dict = defaultdict(lambda: {"base": [], "inserts": defaultdict(list)})
+
+    for card in cards:
+        key = (card.set_name or "Unknown Set", card.year or "")
+        variant = (card.variant or "").strip()
+        if variant and variant.lower() not in ("", "base"):
+            sets_map[key]["inserts"][variant].append(card)
+        else:
+            sets_map[key]["base"].append(card)
+
+    # ── Seed in catalog entries that have no collection cards yet ────────────
+    for cat_entry in catalog.values():
+        ckey = (cat_entry.set_name.strip(), cat_entry.year or "")
+        if ckey not in sets_map:
+            sets_map[ckey]  # touch to create default dict entry
+
+    result = []
+    for (set_name, year), data in sorted(sets_map.items(), key=lambda x: (x[0][1] or "", x[0][0] or ""), reverse=True):
+        all_cards = data["base"] + [c for cs in data["inserts"].values() for c in cs]
+        owned = sum(c.quantity or 1 for c in all_cards)
+        paid  = sum((c.paid or 0) * (c.quantity or 1) for c in all_cards)
+        value = sum((c.price_usd or 0) * (c.quantity or 1) for c in all_cards)
+
+        # Base-set catalog metadata
+        cat = catalog.get((set_name.strip().lower(), year, ""))
+        catalog_id  = cat.id         if cat else None
+        card_count  = cat.card_count if cat else None
+        link        = cat.link       if cat else ""
+        notes       = cat.notes      if cat else ""
+
+        inserts = []
+        for variant, vcards in sorted(data["inserts"].items()):
+            v_owned = sum(c.quantity or 1 for c in vcards)
+            v_paid  = sum((c.paid or 0) * (c.quantity or 1) for c in vcards)
+            v_value = sum((c.price_usd or 0) * (c.quantity or 1) for c in vcards)
+            ins_cat = catalog.get((set_name.strip().lower(), year, variant.strip().lower()))
+            inserts.append({
+                "insert":     variant,
+                "year":       year,
+                "owned":      v_owned,
+                "paid":       round(v_paid, 2),
+                "value":      round(v_value, 2),
+                "card_count": ins_cat.card_count if ins_cat else None,
+                "link":       ins_cat.link       if ins_cat else "",
+                "notes":      ins_cat.notes      if ins_cat else "",
+                "catalog_id": ins_cat.id         if ins_cat else None,
+            })
+
+        # Also add catalog-only inserts with 0 collection cards
+        for cat_entry in catalog.values():
+            if (cat_entry.set_name.strip().lower() == set_name.strip().lower()
+                    and cat_entry.year == year
+                    and (cat_entry.insert_name or "").strip()):
+                already = any(i["insert"].lower() == cat_entry.insert_name.strip().lower() for i in inserts)
+                if not already:
+                    inserts.append({
+                        "insert":     cat_entry.insert_name.strip(),
+                        "year":       year,
+                        "owned":      0,
+                        "paid":       0.0,
+                        "value":      0.0,
+                        "card_count": cat_entry.card_count,
+                        "link":       cat_entry.link,
+                        "notes":      cat_entry.notes,
+                        "catalog_id": cat_entry.id,
+                    })
+
+        result.append({
+            "set_name":   set_name,
+            "year":       year,
+            "owned":      owned,
+            "paid":       round(paid, 2),
+            "value":      round(value, 2),
+            "card_count": card_count,
+            "link":       link,
+            "notes":      notes,
+            "catalog_id": catalog_id,
+            "inserts":    inserts,
+        })
+
+    return {"sets": result}
+
+
 @router.post("/{set_code}/cache-cards")
 def cache_set_cards(set_code: str, game: str = Query("mtg", description="'mtg' or 'pokemon'")):
     """

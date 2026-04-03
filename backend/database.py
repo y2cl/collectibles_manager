@@ -30,5 +30,30 @@ def get_db():
 def create_all_tables():
     """Create all tables defined in ORM models. Called on app startup."""
     # Import models so Base.metadata knows about them
-    from .models import card, owner, settings as settings_model  # noqa: F401
+    from .models import card, owner, settings as settings_model, sports_set  # noqa: F401
     Base.metadata.create_all(bind=engine)
+    _apply_migrations()
+
+
+def _apply_migrations():
+    """Apply lightweight column migrations for existing DBs that predate Alembic."""
+    from sqlalchemy import text
+    new_columns = [
+        ("sport", "TEXT"),
+        ("manufacturer", "TEXT"),
+        ("upc", "TEXT"),
+        ("grading_company", "TEXT"),
+        ("grade", "TEXT"),
+        ("serial_number", "TEXT"),
+        ("print_run", "TEXT"),
+        ("rc", "BOOLEAN"),
+    ]
+    with engine.connect() as conn:
+        for table in ("collection_cards", "watchlist_items"):
+            for col, col_type in new_columns:
+                try:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
+                    conn.commit()
+                except Exception:
+                    # Column already exists — safe to ignore
+                    pass

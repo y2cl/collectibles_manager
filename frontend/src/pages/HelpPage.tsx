@@ -25,11 +25,11 @@ export default function HelpPage() {
 
       <div style={sectionStyle}>
         <h2 style={h2Style}>Searching for Cards</h2>
-        <p>Three game tabs are available: <strong>Magic: The Gathering</strong>, <strong>Pokémon</strong>, and <strong>Baseball Cards</strong>.</p>
+        <p>Three game tabs are available: <strong>Magic: The Gathering</strong>, <strong>Pokémon</strong>, and <strong>Sports Cards</strong>.</p>
         <ul style={{ lineHeight: 1.8 }}>
           <li><strong>MTG</strong> — searches Scryfall. Supports set hint (e.g. <code style={codeStyle}>M21</code>) and collector number.</li>
           <li><strong>Pokémon</strong> — searches the Pokemon TCG API. Supports set hint and card number.</li>
-          <li><strong>Baseball</strong> — searches eBay and SportsCardDatabase. Provide player name, year, team, set, and/or card number.</li>
+          <li><strong>Sports Cards</strong> — manual entry form. Fill in player name, card #, set, insert type, year, price paid, and value, then add directly to your collection. eBay value lookup will be added in a future update.</li>
         </ul>
         <p>Results fall back to local cache when an API is unavailable or disabled in Settings.</p>
       </div>

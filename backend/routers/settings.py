@@ -19,7 +19,6 @@ _DEFAULT_API_CONFIG = {
     "fallback_enabled": True,
     "ebay_enabled": True,
     "sportscarddatabase_enabled": True,
-    "sportscardspro_enabled": False,
     "last_ebay_env": "Sandbox",
     "pokemontcg_api": "https://api.pokemontcg.io/v2/cards",
 }

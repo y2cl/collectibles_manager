@@ -1,5 +1,5 @@
 """
-Search endpoints: GET /api/search/mtg, /api/search/pokemon, /api/search/baseball
+Search endpoints: GET /api/search/mtg, /api/search/pokemon, /api/search/sports
 
 Query params shared by all endpoints:
   force_refresh=true  — skip local cache, fetch from live API, repopulate cache
@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..schemas.card import SearchResponse, CardResult
-from ..services.search_service import search_mtg, search_pokemon, search_baseball
+from ..services.search_service import search_mtg, search_pokemon, search_sports
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 
@@ -18,6 +18,7 @@ router = APIRouter(prefix="/api/search", tags=["search"])
 def _to_card_result(card: dict) -> CardResult:
     return CardResult(
         game=card.get("game", ""),
+        sport=card.get("sport"),
         name=card.get("name", ""),
         set_name=card.get("set", ""),
         set_code=card.get("set_code", ""),
@@ -86,18 +87,49 @@ def search_pokemon_endpoint(
     )
 
 
-@router.get("/baseball", response_model=SearchResponse)
-def search_baseball_endpoint(
+@router.get("/sports", response_model=SearchResponse)
+def search_sports_endpoint(
     player_name: str = Query(..., description="Player name"),
+    sport: str = Query("baseball", description="Sport type: baseball, football, basketball, hockey, soccer, other"),
     year: Optional[str] = Query(None),
     team: Optional[str] = Query(None),
     set_name: Optional[str] = Query(None),
     card_number: Optional[str] = Query(None),
-    force_refresh: bool = Query(False, description="Force live API fetch (no local cache for baseball)"),
+    force_refresh: bool = Query(False, description="Force live API fetch (no local cache for sports cards)"),
     db: Session = Depends(get_db),
 ):
-    cards_raw, shown, total, source = search_baseball(
+    cards_raw, shown, total, source = search_sports(
         player_name=player_name,
+        sport=sport,
+        year=year or "",
+        team=team or "",
+        set_name=set_name or "",
+        card_number=card_number or "",
+        db=db,
+        force_refresh=force_refresh,
+    )
+    return SearchResponse(
+        cards=[_to_card_result(c) for c in cards_raw],
+        total=total,
+        shown=shown,
+        source=source,
+    )
+
+
+@router.get("/baseball", response_model=SearchResponse)
+def search_baseball_endpoint(
+    player_name: str = Query(..., description="Player name (deprecated: use /sports?sport=baseball)"),
+    year: Optional[str] = Query(None),
+    team: Optional[str] = Query(None),
+    set_name: Optional[str] = Query(None),
+    card_number: Optional[str] = Query(None),
+    force_refresh: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    """Deprecated alias for /sports?sport=baseball."""
+    cards_raw, shown, total, source = search_sports(
+        player_name=player_name,
+        sport="baseball",
         year=year or "",
         team=team or "",
         set_name=set_name or "",
