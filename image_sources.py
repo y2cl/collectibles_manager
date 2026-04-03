@@ -157,86 +157,11 @@ class SportLotsImageSource(ImageSource):
             print(f"⚠️ {self.name} Error: {e}")
             return ""
 
-class SportCardsProImageSource(ImageSource):
-    """SportCardsPro image source"""
-    def __init__(self):
-        super().__init__(
-            name="SportCardsPro",
-            base_url="https://www.sportscardspro.com",
-            description="SportCardsPro card database images"
-        )
-    
-    def search_image(self, player_name: str, year: str, set_name: str, card_number: str) -> str:
-        """Search SportCardsPro for card images"""
-        try:
-            # Try to construct direct set URL first
-            if year and set_name:
-                # Convert set name to URL format
-                set_url_name = set_name.lower().replace(' ', '-').replace('.', '')
-                set_url = f"{self.base_url}/console/baseball-cards-{year}-{set_url_name}"
-                
-                print(f"🔍 {self.name}: Trying set URL - {set_url}")
-                
-                response = requests.get(set_url, timeout=30)
-                if response.status_code == 200:
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    
-                    # Look for player cards in the set
-                    card_links = soup.find_all('a', href=re.compile(r'/card/'))
-                    for link in card_links:
-                        link_text = link.get_text(strip=True).lower()
-                        if player_name.lower() in link_text:
-                            # Get the card page
-                            card_url = self.base_url + link.get('href', '')
-                            card_response = requests.get(card_url, timeout=30)
-                            if card_response.status_code == 200:
-                                card_soup = BeautifulSoup(card_response.text, 'html.parser')
-                                
-                                # Look for card image
-                                img_tags = card_soup.find_all('img')
-                                for img in img_tags:
-                                    src = img.get('src', '')
-                                    if 'card' in src.lower() or 'image' in src.lower():
-                                        if src.startswith('/'):
-                                            src = self.base_url + src
-                                        print(f"🖼️ {self.name}: Found image - {src}")
-                                        return src
-            
-            # Fallback to general search
-            search_query = f"{player_name} {year} {set_name}".replace(' ', '+')
-            search_url = f"{self.base_url}/search?q={search_query}"
-            
-            print(f"🔍 {self.name}: General search - {search_url}")
-            
-            response = requests.get(search_url, timeout=30)
-            response.raise_for_status()
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Look for card images in search results
-            img_tags = soup.find_all('img')
-            for img in img_tags:
-                src = img.get('src', '')
-                alt = img.get('alt', '').lower()
-                
-                if player_name.lower() in alt and ('card' in src.lower() or 'image' in src.lower()):
-                    if src.startswith('/'):
-                        src = self.base_url + src
-                    print(f"🖼️ {self.name}: Found image - {src}")
-                    return src
-            
-            return ""
-            
-        except Exception as e:
-            print(f"⚠️ {self.name} Error: {e}")
-            return ""
-
 class ImageSourceManager:
     """Manager for multiple image sources"""
     def __init__(self):
         self.sources = [
             eBayImageSource(),
-            SportCardsProImageSource(),
             SportLotsImageSource(),
         ]
     

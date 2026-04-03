@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { searchApi, MtgSearchParams, PokemonSearchParams, BaseballSearchParams } from '../api/search';
+import { searchApi, MtgSearchParams, PokemonSearchParams, SportsSearchParams } from '../api/search';
 
 export function useMtgSearch(params: MtgSearchParams, enabled: boolean) {
   return useQuery({
@@ -19,13 +19,18 @@ export function usePokemonSearch(params: PokemonSearchParams, enabled: boolean) 
   });
 }
 
-export function useBaseballSearch(params: BaseballSearchParams, enabled: boolean) {
+export function useSportsSearch(params: SportsSearchParams, enabled: boolean) {
   return useQuery({
-    queryKey: ['search', 'baseball', { ...params, force_refresh: undefined }],
-    queryFn: () => searchApi.baseball(params),
+    queryKey: ['search', 'sports', { ...params, force_refresh: undefined }],
+    queryFn: () => searchApi.sports(params),
     enabled: enabled && !!params.player_name,
     staleTime: 5 * 60 * 1000,
   });
+}
+
+/** @deprecated use useSportsSearch */
+export function useBaseballSearch(params: SportsSearchParams, enabled: boolean) {
+  return useSportsSearch(params, enabled);
 }
 
 /**
@@ -35,12 +40,12 @@ export function useBaseballSearch(params: BaseballSearchParams, enabled: boolean
 export function useForceRefreshSearch() {
   const qc = useQueryClient();
 
-  return async (game: 'mtg' | 'pokemon' | 'baseball', params: MtgSearchParams | PokemonSearchParams | BaseballSearchParams) => {
+  return async (game: 'mtg' | 'pokemon' | 'sports', params: MtgSearchParams | PokemonSearchParams | SportsSearchParams) => {
     const refreshed = await (game === 'mtg'
       ? searchApi.mtg({ ...(params as MtgSearchParams), force_refresh: true })
       : game === 'pokemon'
       ? searchApi.pokemon({ ...(params as PokemonSearchParams), force_refresh: true })
-      : searchApi.baseball({ ...(params as BaseballSearchParams), force_refresh: true })
+      : searchApi.sports({ ...(params as SportsSearchParams), force_refresh: true })
     );
 
     // Write the fresh result directly into the cache so the UI updates immediately

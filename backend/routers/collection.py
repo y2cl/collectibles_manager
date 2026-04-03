@@ -36,6 +36,45 @@ def _require_owner(db: Session, owner_id_slug: str) -> Owner:
     return owner
 
 
+@router.get("/suggestions")
+def get_suggestions(
+    owner_id: str = Query(...),
+    profile_id: str = Query("default"),
+    game: str = Query("Sports Cards"),
+    db: Session = Depends(get_db),
+):
+    """Return unique field values for autocomplete datalists."""
+    owner = _require_owner(db, owner_id)
+    cards = db.query(CollectionCard).filter(
+        CollectionCard.owner_id == owner.id,
+        CollectionCard.profile_id == profile_id,
+        CollectionCard.game == game,
+    ).all()
+
+    def uniq(vals):
+        return sorted({v.strip() for v in vals if v and v.strip()})
+
+    # Also pull set/insert names from the sports catalog so newly-defined sets
+    # appear in autocomplete even before any cards are added
+    catalog_sets: list = []
+    catalog_inserts: list = []
+    if game == "Sports Cards":
+        from ..models.sports_set import SportsCardSet
+        cat_rows = db.query(SportsCardSet).filter(
+            SportsCardSet.owner_id == owner.id,
+            SportsCardSet.profile_id == profile_id,
+        ).all()
+        catalog_sets    = [r.set_name    for r in cat_rows if r.set_name]
+        catalog_inserts = [r.insert_name for r in cat_rows if r.insert_name]
+
+    return {
+        "players":          uniq(c.name             for c in cards),
+        "sets":             uniq(list(c.set_name for c in cards) + catalog_sets),
+        "inserts":          uniq(list(c.variant  for c in cards) + catalog_inserts),
+        "grading_companies": uniq(c.grading_company  for c in cards if c.grading_company),
+    }
+
+
 @router.get("", response_model=CollectionResponse)
 def get_collection(
     owner_id: str = Query(...),

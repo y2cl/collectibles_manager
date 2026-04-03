@@ -187,7 +187,7 @@ def export_zip(owner_id: str = Form(...), db: Session = Depends(get_db)):
             for game_label, game_slug in [
                 ("Magic: The Gathering", "mtg"),
                 ("Pokémon", "pokemon"),
-                ("Baseball Cards", "baseball"),
+                ("Sports Cards", "sports"),
             ]:
                 cards = db.query(CollectionCard).filter(
                     CollectionCard.owner_id == owner.id,

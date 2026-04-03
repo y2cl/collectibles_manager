@@ -4,7 +4,7 @@ import { useOwnerStore } from '../../store/ownerStore';
 import styles from './Sidebar.module.css';
 
 const NAV: { to: string; label: string }[] = [
-  { to: '/search', label: '🔍 Search' },
+  { to: '/search', label: '➕ Add to Collection' },
   { to: '/collection', label: '💳 My Collection' },
   { to: '/sets', label: '📚 Card Sets' },
   { to: '/settings', label: '⚙️ Settings' },

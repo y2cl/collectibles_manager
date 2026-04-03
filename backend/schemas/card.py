@@ -10,14 +10,17 @@ from pydantic import BaseModel
 
 class CardResult(BaseModel):
     game: str
+    sport: Optional[str] = None        # for Sports Cards
     name: str
-    set_name: str = ""
+    set_name: str = ""                 # also Line/Series for Collectibles
     set_code: str = ""
     card_number: str = ""
     year: str = ""
     image_url: str = ""
-    image_url_back: str = ""   # back face for double-faced cards
+    image_url_back: str = ""           # back face for double-faced cards
     link: str = ""
+    manufacturer: Optional[str] = None  # brand for Collectibles
+    upc: Optional[str] = None           # barcode for Collectibles
 
     # MTG prices
     price_usd: float = 0.0
@@ -52,13 +55,21 @@ class SearchResponse(BaseModel):
 
 class CollectionCardBase(BaseModel):
     game: str
+    sport: Optional[str] = None        # for Sports Cards
     name: str
-    set_name: str = ""
+    set_name: str = ""                 # also Line/Series for Collectibles
     set_code: str = ""
     card_number: str = ""
     year: str = ""
     link: str = ""
     image_url: str = ""
+    manufacturer: Optional[str] = None  # brand for Collectibles
+    upc: Optional[str] = None           # barcode for Collectibles
+    grading_company: Optional[str] = None
+    grade: Optional[str] = None
+    serial_number: Optional[str] = None  # grading cert number
+    print_run: Optional[str] = None      # serialized print run, e.g. 23/99
+    rc: Optional[bool] = None            # rookie card
 
     price_low: Optional[float] = None
     price_mid: Optional[float] = None
@@ -81,12 +92,27 @@ class CollectionCardCreate(CollectionCardBase):
 
 
 class CollectionCardUpdate(BaseModel):
+    # Identity fields (editable for manual-entry games)
+    name: Optional[str] = None
+    card_number: Optional[str] = None
+    set_name: Optional[str] = None
+    year: Optional[str] = None
+    sport: Optional[str] = None
+    manufacturer: Optional[str] = None
+    upc: Optional[str] = None
+    image_url: Optional[str] = None
+    # Collection metadata
     quantity: Optional[int] = None
     paid: Optional[float] = None
     variant: Optional[str] = None
     notes: Optional[str] = None
     signed: Optional[str] = None
     altered: Optional[str] = None
+    grading_company: Optional[str] = None
+    grade: Optional[str] = None
+    serial_number: Optional[str] = None
+    print_run: Optional[str] = None
+    rc: Optional[bool] = None
     price_usd: Optional[float] = None
     price_usd_foil: Optional[float] = None
     price_usd_etched: Optional[float] = None
@@ -137,13 +163,16 @@ class CollectionResponse(BaseModel):
 
 class WatchlistItemBase(BaseModel):
     game: str
+    sport: Optional[str] = None        # for Sports Cards
     name: str
-    set_name: str = ""
+    set_name: str = ""                 # also Line/Series for Collectibles
     set_code: str = ""
     card_number: str = ""
     year: str = ""
     link: str = ""
     image_url: str = ""
+    manufacturer: Optional[str] = None  # brand for Collectibles
+    upc: Optional[str] = None           # barcode for Collectibles
 
     price_usd: float = 0.0
     price_usd_foil: float = 0.0

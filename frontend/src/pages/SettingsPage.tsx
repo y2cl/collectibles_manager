@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { settingsApi } from '../api/settings';
+import { changelogApi } from '../api/changelog';
 import { useSettingsStore } from '../store/settingsStore';
 import { useAppearanceStore, DEFAULTS, PRESETS, FONT_OPTIONS } from '../store/appearanceStore';
 import type { AppSettings, ApiSourceConfig } from '../types/settings';
 
-const TABS = ['General', 'Appearance', 'Data Sources', 'Debug'];
+const TABS = ['General', 'Appearance', 'Data Sources', 'Debug', 'Change Log'];
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState(0);
@@ -33,6 +34,7 @@ export default function SettingsPage() {
       {activeTab === 1 && <AppearanceSettings />}
       {activeTab === 2 && <DataSourcesSettings />}
       {activeTab === 3 && <DebugSettings />}
+      {activeTab === 4 && <ChangeLogSettings />}
     </div>
   );
 }
@@ -434,6 +436,119 @@ function ColorRow({
         onChange={(e) => onChange(e.target.value)}
         style={{ width: 88, padding: '4px 6px', fontFamily: 'monospace', fontSize: '0.8rem', border: '1px solid #ccc', borderRadius: 4 }}
       />
+    </div>
+  );
+}
+
+// ── Change Log ────────────────────────────────────────────────────────────────
+
+function ChangeLogSettings() {
+  const [selected, setSelected] = useState<string | null>(null);
+
+  const { data: entries = [], isLoading } = useQuery({
+    queryKey: ['changelog'],
+    queryFn: changelogApi.list,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const { data: detail, isLoading: detailLoading } = useQuery({
+    queryKey: ['changelog', selected],
+    queryFn: () => changelogApi.get(selected!),
+    enabled: !!selected,
+    staleTime: 60 * 60 * 1000,
+  });
+
+  if (selected) {
+    return (
+      <div style={{ maxWidth: 760 }}>
+        <button
+          onClick={() => setSelected(null)}
+          style={{ marginBottom: 16, padding: '5px 14px', borderRadius: 4, border: '1px solid #ccc', background: '#f5f7fb', cursor: 'pointer', fontSize: '0.85rem' }}
+        >
+          ← Back to list
+        </button>
+        {detailLoading && <p style={{ color: '#888' }}>Loading…</p>}
+        {detail && <MarkdownView content={detail.content} />}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ maxWidth: 600 }}>
+      <p style={{ margin: '0 0 1rem', color: '#666', fontSize: '0.85rem' }}>
+        Release notes for each version. Click an entry to read the full changelog.
+      </p>
+      {isLoading && <p style={{ color: '#888' }}>Loading…</p>}
+      {!isLoading && entries.length === 0 && (
+        <p style={{ color: '#888' }}>No changelogs found.</p>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {entries.map((e) => (
+          <button
+            key={e.filename}
+            onClick={() => setSelected(e.filename)}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '12px 16px', borderRadius: 6,
+              border: '1px solid #e0e4f0', background: '#fff',
+              cursor: 'pointer', textAlign: 'left',
+              transition: 'background 0.15s',
+            }}
+            onMouseEnter={(ev) => (ev.currentTarget.style.background = '#f5f7ff')}
+            onMouseLeave={(ev) => (ev.currentTarget.style.background = '#fff')}
+          >
+            <div>
+              <span style={{ fontWeight: 700, fontSize: '0.95rem', color: '#4c6ef5' }}>{e.version}</span>
+              <span style={{ marginLeft: 12, fontSize: '0.85rem', color: '#666' }}>{e.date}</span>
+            </div>
+            <span style={{ fontSize: '0.8rem', color: '#aaa' }}>View →</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MarkdownView({ content }: { content: string }) {
+  // Minimal markdown renderer: headings, bold, bullet lists, horizontal rules
+  const lines = content.split('\n');
+  const elements: React.ReactNode[] = [];
+  let key = 0;
+
+  const renderInline = (text: string): React.ReactNode => {
+    // Bold **text**
+    const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+    return parts.map((part, i) => {
+      if (part.startsWith('**') && part.endsWith('**'))
+        return <strong key={i}>{part.slice(2, -2)}</strong>;
+      if (part.startsWith('`') && part.endsWith('`'))
+        return <code key={i} style={{ background: '#f0f2fa', padding: '1px 4px', borderRadius: 3, fontFamily: 'monospace', fontSize: '0.88em' }}>{part.slice(1, -1)}</code>;
+      return part;
+    });
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith('# ')) {
+      elements.push(<h1 key={key++} style={{ fontSize: '1.4rem', margin: '0.5rem 0 0.75rem', borderBottom: '2px solid #e0e4f0', paddingBottom: 8 }}>{renderInline(line.slice(2))}</h1>);
+    } else if (line.startsWith('## ')) {
+      elements.push(<h2 key={key++} style={{ fontSize: '1.1rem', margin: '1.25rem 0 0.5rem', color: '#3b5bdb' }}>{renderInline(line.slice(3))}</h2>);
+    } else if (line.startsWith('### ')) {
+      elements.push(<h3 key={key++} style={{ fontSize: '0.95rem', margin: '1rem 0 0.25rem', color: '#555' }}>{renderInline(line.slice(4))}</h3>);
+    } else if (line.startsWith('- ')) {
+      elements.push(<li key={key++} style={{ marginLeft: 20, marginBottom: 3, fontSize: '0.9rem' }}>{renderInline(line.slice(2))}</li>);
+    } else if (line.trim() === '---') {
+      elements.push(<hr key={key++} style={{ border: 'none', borderTop: '1px solid #e0e4f0', margin: '1rem 0' }} />);
+    } else if (line.trim() === '') {
+      elements.push(<div key={key++} style={{ height: 6 }} />);
+    } else {
+      elements.push(<p key={key++} style={{ margin: '0 0 6px', fontSize: '0.9rem', lineHeight: 1.6 }}>{renderInline(line)}</p>);
+    }
+  }
+
+  return (
+    <div style={{ background: '#fff', border: '1px solid #e0e4f0', borderRadius: 8, padding: '24px 28px', lineHeight: 1.6 }}>
+      {elements}
     </div>
   );
 }

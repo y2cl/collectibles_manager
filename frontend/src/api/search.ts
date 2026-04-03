@@ -15,8 +15,9 @@ export interface PokemonSearchParams {
   force_refresh?: boolean;
 }
 
-export interface BaseballSearchParams {
+export interface SportsSearchParams {
   player_name: string;
+  sport?: string;
   year?: string;
   team?: string;
   set_name?: string;
@@ -31,6 +32,10 @@ export const searchApi = {
   pokemon: (params: PokemonSearchParams) =>
     client.get<SearchResponse>('/api/search/pokemon', { params }).then((r) => r.data),
 
-  baseball: (params: BaseballSearchParams) =>
-    client.get<SearchResponse>('/api/search/baseball', { params }).then((r) => r.data),
+  sports: (params: SportsSearchParams) =>
+    client.get<SearchResponse>('/api/search/sports', { params }).then((r) => r.data),
+
+  /** @deprecated use sports() */
+  baseball: (params: SportsSearchParams) =>
+    client.get<SearchResponse>('/api/search/sports', { params: { ...params, sport: 'baseball' } }).then((r) => r.data),
 };

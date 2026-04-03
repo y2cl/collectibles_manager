@@ -20,14 +20,22 @@ class CollectionCard(Base):
     profile_id = Column(String, nullable=False, default="default")
 
     # Card identity
-    game = Column(String, nullable=False)        # "Magic: The Gathering" | "Pokémon" | "Baseball Cards"
+    game = Column(String, nullable=False)        # "Magic: The Gathering" | "Pokémon" | "Sports Cards" | "Collectibles"
+    sport = Column(String, nullable=True)        # "baseball" | "football" | "basketball" | "hockey" | "soccer" | "other"
     name = Column(String, nullable=False)
-    set_name = Column(String, default="")
+    set_name = Column(String, default="")        # also used as Line/Series for Collectibles
     set_code = Column(String, default="")
     card_number = Column(String, default="")
     year = Column(String, default="")
     link = Column(String, default="")
     image_url = Column(String, default="")
+    manufacturer = Column(String, nullable=True) # brand/manufacturer for Collectibles
+    upc = Column(String, nullable=True)          # UPC/EAN barcode for Collectibles
+    grading_company = Column(String, nullable=True)  # e.g. PSA, BGS, SGC
+    grade = Column(String, nullable=True)            # e.g. 9, 9.5, 10
+    serial_number = Column(String, nullable=True)    # grading cert number
+    print_run = Column(String, nullable=True)        # serialized print run, e.g. 23/99
+    rc = Column(Boolean, default=False, nullable=True)  # rookie card
 
     # Pricing (MTG uses price_usd/foil/etched; Pokémon uses low/mid/market)
     price_low = Column(Float, nullable=True)
@@ -63,13 +71,21 @@ class WatchlistItem(Base):
     profile_id = Column(String, nullable=False, default="default")
 
     game = Column(String, nullable=False)
+    sport = Column(String, nullable=True)        # "baseball" | "football" | "basketball" | "hockey" | "soccer" | "other"
     name = Column(String, nullable=False)
-    set_name = Column(String, default="")
+    set_name = Column(String, default="")        # also used as Line/Series for Collectibles
     set_code = Column(String, default="")
     card_number = Column(String, default="")
     year = Column(String, default="")
     link = Column(String, default="")
     image_url = Column(String, default="")
+    manufacturer = Column(String, nullable=True) # brand/manufacturer for Collectibles
+    upc = Column(String, nullable=True)          # UPC/EAN barcode for Collectibles
+    grading_company = Column(String, nullable=True)  # e.g. PSA, BGS, SGC
+    grade = Column(String, nullable=True)            # e.g. 9, 9.5, 10
+    serial_number = Column(String, nullable=True)    # grading cert number
+    print_run = Column(String, nullable=True)        # serialized print run, e.g. 23/99
+    rc = Column(Boolean, default=False, nullable=True)  # rookie card
 
     price_usd = Column(Float, default=0.0)
     price_usd_foil = Column(Float, default=0.0)
