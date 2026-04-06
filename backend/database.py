@@ -31,14 +31,14 @@ def create_all_tables():
     """Create all tables defined in ORM models. Called on app startup."""
     # Import models so Base.metadata knows about them
     from .models import card, owner, settings as settings_model, sports_set  # noqa: F401
-    Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=engine)  # creates new tables (import_history etc.)
     _apply_migrations()
 
 
 def _apply_migrations():
     """Apply lightweight column migrations for existing DBs that predate Alembic."""
     from sqlalchemy import text
-    new_columns = [
+    card_columns = [
         ("sport", "TEXT"),
         ("manufacturer", "TEXT"),
         ("upc", "TEXT"),
@@ -50,10 +50,16 @@ def _apply_migrations():
     ]
     with engine.connect() as conn:
         for table in ("collection_cards", "watchlist_items"):
-            for col, col_type in new_columns:
+            for col, col_type in card_columns:
                 try:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
                     conn.commit()
                 except Exception:
-                    # Column already exists — safe to ignore
                     pass
+
+        # import_ambiguities: link back to import batch for undo support
+        try:
+            conn.execute(text("ALTER TABLE import_ambiguities ADD COLUMN import_history_id INTEGER"))
+            conn.commit()
+        except Exception:
+            pass

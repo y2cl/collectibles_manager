@@ -197,7 +197,7 @@ export default function CollectionPage() {
     />
   );
 
-  const thSort = (col: string, sortKey_: string = col): React.CSSProperties => ({
+  const thSort = (col: string, _sortKey: string = col): React.CSSProperties => ({
     padding: '6px 8px', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap',
     position: 'relative', width: colWidths[col] ?? DEFAULT_COL_WIDTHS[col],
     overflow: 'hidden',
@@ -231,7 +231,10 @@ export default function CollectionPage() {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <select
             value={scope}
-            onChange={(e) => { setScope(e.target.value); setSportFilter('all'); setPlayerFilter(''); setSetFilter(''); setInsertFilter(''); setYearFilter(''); }}
+            onChange={(e) => {
+              if (e.target.value === 'All' && activeTab === 4) setActiveTab(0);
+              setScope(e.target.value); setSportFilter('all'); setPlayerFilter(''); setSetFilter(''); setInsertFilter(''); setYearFilter('');
+            }}
             style={{ padding: '6px 10px', borderRadius: 4, border: '1px solid #ccc', fontSize: '0.9rem' }}
           >
             {GAMES.map((g) => <option key={g}>{g}</option>)}
@@ -264,9 +267,10 @@ export default function CollectionPage() {
 
       {/* Tab bar */}
       <div style={tabBarStyle}>
-        {TABS.map((label, i) => (
-          <button key={i} style={tabBtn(activeTab === i)} onClick={() => setActiveTab(i)}>{label}</button>
-        ))}
+        {TABS.map((label, i) => {
+          if (i === 4 && scope === 'All') return null;
+          return <button key={i} style={tabBtn(activeTab === i)} onClick={() => setActiveTab(i)}>{label}</button>;
+        })}
       </div>
 
       {/* Collection tab */}
@@ -336,7 +340,7 @@ export default function CollectionPage() {
               </button>
               <button
                 style={{ padding: '5px 10px', border: '1px solid #ccc', borderRadius: 4, background: '#fff', cursor: 'pointer', fontSize: '0.82rem' }}
-                onClick={clearSelection}
+                onClick={() => clearSelection()}
               >
                 Clear
               </button>
@@ -491,7 +495,7 @@ export default function CollectionPage() {
       {activeTab === 3 && <WatchlistTab />}
 
       {/* Import/Export tab */}
-      {activeTab === 4 && <ImportExportTab />}
+      {activeTab === 4 && <ImportExportTab scope={scope} />}
 
       {/* Management tab */}
       {activeTab === 5 && <ManagementTab />}
