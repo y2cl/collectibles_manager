@@ -84,6 +84,7 @@ def _derive_variant(row: Dict) -> str:
     """
     Derive the MTG variant from Foil / Etched yes-no columns.
     Falls back to the legacy `variant` column if neither column is present.
+    Also accepts Manabox-style "foil"/"normal" values for the Foil column.
     """
     has_foil_col   = row.get("foil")   is not None
     has_etched_col = row.get("etched") is not None
@@ -91,12 +92,13 @@ def _derive_variant(row: Dict) -> str:
     if has_foil_col or has_etched_col:
         if _is_yes(row.get("etched")):
             return "etched"
-        if _is_yes(row.get("foil")):
+        foil_val = (row.get("foil") or "").strip().lower()
+        if _is_yes(foil_val) or foil_val == "foil":
             return "foil"
         return "nonfoil"
 
-    # Legacy format — use the variant column as-is
-    return row.get("variant", "")
+    # Legacy / other game types — check variant, then sport-card insert, then collectible condition
+    return row.get("variant", "") or row.get("insert", "") or row.get("condition", "")
 
 
 def _fetch_scryfall_card(scryfall_id: str) -> Optional[Dict]:
@@ -175,17 +177,29 @@ def _row_to_card_data(row: Dict) -> Dict:
     variant = _derive_variant(row)
 
     signed  = "yes" if _is_yes(row.get("signed"))  else row.get("signed", "")
-    altered = "yes" if _is_yes(row.get("altered")) else row.get("altered", "")
+    altered_val = (row.get("altered") or "").strip().lower()
+    altered = "yes" if (_is_yes(altered_val) or altered_val == "altered") else row.get("altered", "")
 
     return {
         "game":            _detect_game(row),
         "name":            row.get("name", ""),
-        "set_name":        row.get("set", "") or row.get("set_name", ""),
+        "set_name":        row.get("set", "") or row.get("set_name", "") or row.get("series", ""),
         "set_code":        row.get("set_code", ""),
         "card_number":     row.get("collector_number", "") or row.get("card_number", ""),
         "year":            row.get("year", ""),
         "link":            row.get("link", ""),
         "image_url":       row.get("image_url", ""),
+        # Sports Cards fields
+        "sport":           row.get("sport", ""),
+        "grading_company": row.get("grading_company", ""),
+        "grade":           row.get("grade", ""),
+        "serial_number":   row.get("serial_number", ""),
+        "print_run":       row.get("print_run", ""),
+        "rc":              _is_yes(row.get("rc", "")) or _is_yes(row.get("rookie_card", "")),
+        # Collectibles fields
+        "manufacturer":    row.get("manufacturer", ""),
+        "upc":             row.get("upc", ""),
+        # Pricing
         "price_low":       _to_float(row.get("price_low")),
         "price_mid":       _to_float(row.get("price_mid")),
         "price_market":    _to_float(row.get("price_market")),
@@ -194,12 +208,220 @@ def _row_to_card_data(row: Dict) -> Dict:
         "price_usd_etched":_to_float(row.get("price_usd_etched")),
         "quantity":        _to_int(row.get("quantity"), 1),
         "variant":         variant,
-        "paid":            _to_float(row.get("paid")),
+        "paid":            _to_float(row.get("paid") or row.get("purchase_price")),
         "signed":          signed,
         "altered":         altered,
         "notes":           row.get("notes", ""),
         "target_price":    _to_float(row.get("target_price")),
     }
+
+
+def _apply_mapping(raw_row: Dict, mapping: Dict) -> Dict:
+    """
+    Rename raw CSV columns according to a user-supplied mapping.
+    mapping: {target_display_name: source_header}  e.g. {"Scryfall ID": "Scryfall_ID_col"}
+    Columns not present in the mapping values are kept as-is.
+    """
+    if not mapping:
+        return raw_row
+    result: Dict = {}
+    mapped_sources = {v for v in mapping.values() if v}
+    for target, source in mapping.items():
+        if source and source in raw_row:
+            result[target] = raw_row[source]
+    for key, val in raw_row.items():
+        if key not in mapped_sources:
+            result[key] = val
+    return result
+
+
+def import_csv_stream(
+    file_content: bytes,
+    owner_id_slug: str,
+    profile_id: str,
+    db: Session,
+    duplicate_strategy: str = "merge",
+    paid_merge_strategy: str = "sum",
+    column_mapping: Optional[Dict] = None,
+    game_override: Optional[str] = None,
+    filename: str = "import.csv",
+):
+    """
+    Generator that processes a CSV import row-by-row and yields progress dicts.
+
+    Yield sequence:
+      {"type": "start",    "total": N}
+      {"type": "progress", "current": i, "total": N, "name": "...", "status": "imported"|"ambiguous"|"skipped"}
+      {"type": "done",     "imported": N, "ambiguous": M, "ambiguities": [...]}
+      {"type": "error",    "message": "..."}   ← only on fatal failure
+    """
+    from ..models.owner import Owner
+    from ..models.settings import ImportAmbiguity, ImportHistory
+    from ..services.collection_service import add_card
+    from ..services.search_service import search_mtg, search_pokemon
+
+    try:
+        owner = db.query(Owner).filter(Owner.owner_id == owner_id_slug).first()
+        if not owner:
+            yield {"type": "error", "message": f"Owner '{owner_id_slug}' not found"}
+            return
+
+        text = file_content.decode("utf-8-sig", errors="replace")
+
+        # Pre-collect all non-empty rows so we know the total up-front
+        all_raw_rows = [
+            dict(r) for r in csv.DictReader(io.StringIO(text)) if any(r.values())
+        ]
+        total = len(all_raw_rows)
+        yield {"type": "start", "total": total}
+
+        imported = 0
+        created_card_ids: List[int] = []
+        ambiguous_rows: List[Dict] = []
+
+        # Create the history record up-front so ambiguities can reference it
+        history = ImportHistory(
+            owner_id=owner.id,
+            profile_id=profile_id,
+            filename=filename,
+            file_data=file_content,
+            game=game_override or "",
+            imported_count=0,
+            ambiguous_count=0,
+            created_card_ids=[],
+        )
+        db.add(history)
+        db.flush()
+
+        for idx, raw_row in enumerate(all_raw_rows):
+            # Apply user-supplied column mapping before normalisation
+            if column_mapping:
+                raw_row = _apply_mapping(raw_row, column_mapping)
+
+            row = _normalize_row(raw_row)
+            card_data = _row_to_card_data(row)
+            if game_override:
+                card_data["game"] = game_override
+
+            name = card_data.get("name", "").strip()
+            current = idx + 1
+
+            if not name:
+                yield {"type": "progress", "current": current, "total": total,
+                       "name": "(skipped — no name)", "status": "skipped"}
+                continue
+
+            game = card_data.get("game", "")
+
+            # ── Scryfall ID fast-path ────────────────────────────────────────
+            scryfall_id = row.get("scryfall_id", "").strip()
+            if scryfall_id and game == "Magic: The Gathering":
+                yield {"type": "progress", "current": current, "total": total,
+                       "name": name, "status": "fetching"}
+                api_data = _fetch_scryfall_card(scryfall_id)
+                if api_data:
+                    merged = {
+                        **api_data,
+                        **{k: v for k, v in card_data.items() if v not in ("", 0, 0.0, None)},
+                    }
+                    merged["signed"] = _resolve_signed(
+                        merged.get("signed", ""), api_data.get("artist", "")
+                    )
+                    try:
+                        card = add_card(db, owner_id_slug, profile_id, merged,
+                                        duplicate_strategy, paid_merge_strategy)
+                        imported += 1
+                        created_card_ids.append(card.id)
+                        yield {"type": "progress", "current": current, "total": total,
+                               "name": name, "status": "imported"}
+                    except Exception as e:
+                        logger.error("Failed to insert card '%s' (Scryfall ID %s): %s",
+                                     name, scryfall_id, e)
+                        yield {"type": "progress", "current": current, "total": total,
+                               "name": name, "status": "error"}
+                    continue
+                logger.warning(
+                    "Scryfall ID lookup failed for '%s' (%s); falling back to search",
+                    name, scryfall_id,
+                )
+
+            # ── Normal search-based path ─────────────────────────────────────
+            yield {"type": "progress", "current": current, "total": total,
+                   "name": name, "status": "searching"}
+
+            set_code   = card_data.get("set_code", "")
+            card_number = card_data.get("card_number", "")
+            candidates: List[Dict] = []
+            try:
+                if game == "Pokémon":
+                    results, _, _, _ = search_pokemon(name, set_code, card_number, db=db)
+                    candidates = results
+                elif game == "Magic: The Gathering":
+                    results, _, _, _ = search_mtg(name, set_code, card_number, db=db)
+                    candidates = results
+                # Sports Cards and Collectibles — insert directly (no search API)
+            except Exception as e:
+                logger.warning("Search during import failed for '%s': %s", name, e)
+
+            if len(candidates) == 1:
+                merged = {**candidates[0], **{k: v for k, v in card_data.items() if v}}
+                merged["signed"] = _resolve_signed(
+                    merged.get("signed", ""), candidates[0].get("artist", "")
+                )
+                try:
+                    card = add_card(db, owner_id_slug, profile_id, merged,
+                                    duplicate_strategy, paid_merge_strategy)
+                    imported += 1
+                    created_card_ids.append(card.id)
+                    yield {"type": "progress", "current": current, "total": total,
+                           "name": name, "status": "imported"}
+                except Exception as e:
+                    logger.error("Failed to insert card '%s': %s", name, e)
+                    yield {"type": "progress", "current": current, "total": total,
+                           "name": name, "status": "error"}
+            elif len(candidates) == 0:
+                try:
+                    card = add_card(db, owner_id_slug, profile_id, card_data,
+                                    duplicate_strategy, paid_merge_strategy)
+                    imported += 1
+                    created_card_ids.append(card.id)
+                    yield {"type": "progress", "current": current, "total": total,
+                           "name": name, "status": "imported"}
+                except Exception as e:
+                    logger.error("Failed to insert card '%s': %s", name, e)
+                    yield {"type": "progress", "current": current, "total": total,
+                           "name": name, "status": "error"}
+            else:
+                # Multiple candidates — store for user disambiguation
+                ambiguity = ImportAmbiguity(
+                    owner_id=owner.id,
+                    profile_id=profile_id,
+                    row_data=card_data,
+                    candidates=candidates[:10],
+                    import_history_id=history.id,
+                )
+                db.add(ambiguity)
+                db.flush()
+                ambiguous_rows.append({
+                    "id": ambiguity.id,
+                    "row_data": card_data,
+                    "candidates": candidates[:10],
+                })
+                yield {"type": "progress", "current": current, "total": total,
+                       "name": name, "status": "ambiguous"}
+
+        # Finalise history record
+        history.imported_count = imported
+        history.ambiguous_count = len(ambiguous_rows)
+        history.created_card_ids = created_card_ids
+        db.commit()
+
+        yield {"type": "done", "imported": imported,
+               "ambiguous": len(ambiguous_rows), "ambiguities": ambiguous_rows}
+
+    except Exception as exc:
+        logger.error("import_csv_stream error: %s", exc)
+        yield {"type": "error", "message": str(exc)}
 
 
 def import_csv(
@@ -209,121 +431,30 @@ def import_csv(
     db: Session,
     duplicate_strategy: str = "merge",
     paid_merge_strategy: str = "sum",
+    column_mapping: Optional[Dict] = None,
+    game_override: Optional[str] = None,
+    filename: str = "import.csv",
 ) -> Tuple[int, int, List[Dict]]:
     """
-    Parse a CSV import file.
-    Returns (imported_count, ambiguous_count, ambiguity_dicts).
-    Unambiguous rows are inserted immediately.
-    Ambiguous rows are stored in the import_ambiguities table for later resolution.
+    Thin wrapper around import_csv_stream for callers that don't need SSE streaming.
+    Drains the generator and returns (imported_count, ambiguous_count, ambiguity_dicts).
     """
-    from ..models.owner import Owner
-    from ..models.settings import ImportAmbiguity
-    from ..services.collection_service import add_card
-    from ..services.search_service import search_mtg, search_pokemon
-
-    owner = db.query(Owner).filter(Owner.owner_id == owner_id_slug).first()
-    if not owner:
-        raise ValueError(f"Owner '{owner_id_slug}' not found")
-
-    text = file_content.decode("utf-8-sig", errors="replace")
-    reader = csv.DictReader(io.StringIO(text))
-
-    imported = 0
-    ambiguous_rows: List[Dict] = []
-
-    for raw_row in reader:
-        if not any(raw_row.values()):
-            continue
-
-        # Normalise headers: lowercase + underscores so "Set Code" == "set_code" etc.
-        row = _normalize_row(raw_row)
-
-        card_data = _row_to_card_data(row)
-        name = card_data.get("name", "").strip()
-        if not name:
-            continue
-
-        game = card_data.get("game", "")
-
-        # ── Scryfall ID fast-path ────────────────────────────────────────────
-        # If the row carries a Scryfall UUID we can fetch the card directly and
-        # skip the fuzzy-search / ambiguity flow entirely.
-        scryfall_id = row.get("scryfall_id", "").strip()
-        if scryfall_id and game == "Magic: The Gathering":
-            api_data = _fetch_scryfall_card(scryfall_id)
-            if api_data:
-                # API data fills gaps; CSV-provided values (quantity, variant,
-                # paid, signed, altered, notes) take precedence.
-                merged = {
-                    **api_data,
-                    **{k: v for k, v in card_data.items() if v not in ("", 0, 0.0, None)},
-                }
-                # Auto-fill signed with artist name when user said Signed=yes
-                merged["signed"] = _resolve_signed(merged.get("signed", ""), api_data.get("artist", ""))
-                try:
-                    add_card(db, owner_id_slug, profile_id, merged,
-                             duplicate_strategy, paid_merge_strategy)
-                    imported += 1
-                except Exception as e:
-                    logger.error("Failed to insert card '%s' (Scryfall ID %s): %s",
-                                 name, scryfall_id, e)
-                continue  # done with this row
-            # If the Scryfall lookup failed, fall through to the normal search path
-            logger.warning("Scryfall ID lookup failed for '%s' (%s); falling back to search",
-                           name, scryfall_id)
-
-        # ── Normal search-based path ─────────────────────────────────────────
-        set_code = card_data.get("set_code", "")
-        card_number = card_data.get("card_number", "")
-
-        candidates: List[Dict] = []
-        try:
-            if game == "Pokémon":
-                results, _, _, _ = search_pokemon(name, set_code, card_number, db=db)
-                candidates = results
-            else:
-                results, _, _, _ = search_mtg(name, set_code, card_number, db=db)
-                candidates = results
-        except Exception as e:
-            logger.warning("Search during import failed for '%s': %s", name, e)
-
-        if len(candidates) == 1:
-            # Merge search result data with import data (import values take precedence)
-            merged = {**candidates[0], **{k: v for k, v in card_data.items() if v}}
-            # Auto-fill signed with artist name when user said Signed=yes
-            merged["signed"] = _resolve_signed(merged.get("signed", ""), candidates[0].get("artist", ""))
-            try:
-                add_card(db, owner_id_slug, profile_id, merged,
-                         duplicate_strategy, paid_merge_strategy)
-                imported += 1
-            except Exception as e:
-                logger.error("Failed to insert card '%s': %s", name, e)
-        elif len(candidates) == 0:
-            # No match found — insert with import data as-is
-            try:
-                add_card(db, owner_id_slug, profile_id, card_data,
-                         duplicate_strategy, paid_merge_strategy)
-                imported += 1
-            except Exception as e:
-                logger.error("Failed to insert card '%s': %s", name, e)
-        else:
-            # Multiple candidates — store for user disambiguation
-            ambiguity = ImportAmbiguity(
-                owner_id=owner.id,
-                profile_id=profile_id,
-                row_data=card_data,
-                candidates=candidates[:10],
-            )
-            db.add(ambiguity)
-            db.flush()
-            ambiguous_rows.append({
-                "id": ambiguity.id,
-                "row_data": card_data,
-                "candidates": candidates[:10],
-            })
-
-    db.commit()
-    return imported, len(ambiguous_rows), ambiguous_rows
+    for event in import_csv_stream(
+        file_content=file_content,
+        owner_id_slug=owner_id_slug,
+        profile_id=profile_id,
+        db=db,
+        duplicate_strategy=duplicate_strategy,
+        paid_merge_strategy=paid_merge_strategy,
+        column_mapping=column_mapping,
+        game_override=game_override,
+        filename=filename,
+    ):
+        if event.get("type") == "done":
+            return event["imported"], event["ambiguous"], event["ambiguities"]
+        if event.get("type") == "error":
+            raise ValueError(event["message"])
+    return 0, 0, []
 
 
 def resolve_ambiguities(
@@ -339,7 +470,7 @@ def resolve_ambiguities(
     Each resolution: { ambiguity_id, selected_candidate, quantity, variant, paid }
     Returns count of rows committed.
     """
-    from ..models.settings import ImportAmbiguity
+    from ..models.settings import ImportAmbiguity, ImportHistory
     from ..services.collection_service import add_card
 
     committed = 0
@@ -363,8 +494,19 @@ def resolve_ambiguities(
         card_data["paid"] = res.get("paid", 0.0)
 
         try:
-            add_card(db, owner_id_slug, profile_id, card_data,
-                     duplicate_strategy, paid_merge_strategy)
+            card = add_card(db, owner_id_slug, profile_id, card_data,
+                            duplicate_strategy, paid_merge_strategy)
+            # Append the new card ID to its import batch history so undo works
+            if amb.import_history_id:
+                history = db.query(ImportHistory).filter(
+                    ImportHistory.id == amb.import_history_id
+                ).first()
+                if history:
+                    existing_ids = list(history.created_card_ids or [])
+                    existing_ids.append(card.id)
+                    history.created_card_ids = existing_ids
+                    history.imported_count = (history.imported_count or 0) + 1
+                    history.ambiguous_count = max(0, (history.ambiguous_count or 0) - 1)
             db.delete(amb)
             committed += 1
         except Exception as e:

@@ -19,6 +19,7 @@ class Owner(Base):
     cards = relationship("CollectionCard", back_populates="owner", cascade="all, delete-orphan")
     watchlist = relationship("WatchlistItem", back_populates="owner", cascade="all, delete-orphan")
     ambiguities = relationship("ImportAmbiguity", back_populates="owner", cascade="all, delete-orphan")
+    import_history = relationship("ImportHistory", back_populates="owner", cascade="all, delete-orphan")
 
 
 class Profile(Base):
