@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMtgSearch, usePokemonSearch, useForceRefreshSearch } from '../hooks/useSearch';
+import { useMtgSearch, usePokemonSearch, useCoinSearch, useForceRefreshSearch } from '../hooks/useSearch';
 import { useAddCard } from '../hooks/useCollection';
 import { useOwnerStore } from '../store/ownerStore';
 import { lookupApi } from '../api/lookup';
@@ -10,13 +10,14 @@ import { gradingLookupUrl } from '../utils/gradingLookup';
 import SearchResultsGrid from '../components/search/SearchResultsGrid';
 import { useSettingsStore } from '../store/settingsStore';
 
-type Game = 'mtg' | 'pokemon' | 'sports' | 'collectibles';
+type Game = 'mtg' | 'pokemon' | 'sports' | 'collectibles' | 'coins';
 
 const TABS: { id: Game; label: string }[] = [
   { id: 'mtg',          label: '🧙 Magic: The Gathering' },
   { id: 'pokemon',      label: '⚡ Pokémon' },
   { id: 'sports',       label: '🏆 Sports Cards' },
   { id: 'collectibles', label: '🎁 Collectibles' },
+  { id: 'coins',        label: '🪙 Coins' },
 ];
 
 const SPORTS = [
@@ -59,6 +60,12 @@ export default function HomePage() {
   const [pkmnNum, setPkmnNum] = useState('');
   const [pkmnSearch, setPkmnSearch] = useState(false);
 
+  // Coins state
+  const [coinName, setCoinName] = useState('');
+  const [coinYear, setCoinYear] = useState('');
+  const [coinMint, setCoinMint] = useState('');
+  const [coinSearch, setCoinSearch] = useState(false);
+
   // Sports manual-add state
   const [sp, setSp] = useState(emptySportsForm);
   const [spMsg, setSpMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -95,9 +102,11 @@ export default function HomePage() {
 
   const mtgParams  = { name: mtgName, set_hint: mtgSet, collector_number: mtgNum };
   const pkmnParams = { name: pkmnName, set_hint: pkmnSet, number: pkmnNum };
+  const coinParams = { name: coinName, year: coinYear, mint_mark: coinMint };
 
   const mtgResult  = useMtgSearch(mtgParams, mtgSearch);
   const pkmnResult = usePokemonSearch(pkmnParams, pkmnSearch);
+  const coinResult = useCoinSearch(coinParams, coinSearch);
 
   const handleAddSportsCard = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -266,6 +275,49 @@ export default function HomePage() {
             onChange={(e) => { setPkmnNum(e.target.value); setPkmnSearch(false); }} />
           <button type="submit" style={btnStyle}>Search Pokémon</button>
         </form>
+      )}
+
+      {/* Coins Search */}
+      {game === 'coins' && (
+        <div>
+          <p style={{ margin: '0 0 1rem', color: '#666', fontSize: '0.9rem' }}>
+            Search the NGC Price Guide by coin type. Prices are fetched live and cached locally for faster future lookups.
+          </p>
+          <form
+            onSubmit={(e) => { e.preventDefault(); setCoinSearch(true); }}
+            style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: '1.5rem' }}
+          >
+            <input
+              style={inputStyle}
+              placeholder="Coin name / series *  (e.g. Morgan Dollar, Lincoln Cent)"
+              value={coinName}
+              onChange={(e) => { setCoinName(e.target.value); setCoinSearch(false); }}
+            />
+            <input
+              style={{ ...inputStyle, flex: 0, width: 80 }}
+              placeholder="Year"
+              value={coinYear}
+              onChange={(e) => { setCoinYear(e.target.value); setCoinSearch(false); }}
+            />
+            <input
+              style={{ ...inputStyle, flex: 0, width: 70 }}
+              placeholder="Mint"
+              value={coinMint}
+              onChange={(e) => { setCoinMint(e.target.value); setCoinSearch(false); }}
+              title="Mint mark, e.g. D, S, O, CC"
+            />
+            <button type="submit" style={btnStyle}>Search Coins</button>
+          </form>
+          <SearchResultsGrid
+            cards={coinResult.data?.cards ?? []}
+            source={coinResult.data?.source}
+            total={coinResult.data?.total}
+            loading={coinResult.isLoading}
+            cardsPerRow={cardsPerRow}
+            imageWidth={imageWidth}
+            onRefreshFromApi={() => forceRefreshSearch('coins', coinParams)}
+          />
+        </div>
       )}
 
       {/* Sports Cards — manual entry */}

@@ -47,6 +47,14 @@ def _apply_migrations():
         ("serial_number", "TEXT"),
         ("print_run", "TEXT"),
         ("rc", "BOOLEAN"),
+        ("signed", "TEXT"),
+        ("notes", "TEXT"),
+        # Coin-specific fields
+        ("denomination", "TEXT"),
+        ("country", "TEXT"),
+        ("coin_or_bill", "TEXT"),
+        ("silver_amount", "REAL"),
+        ("mint_mark", "TEXT"),
     ]
     with engine.connect() as conn:
         for table in ("collection_cards", "watchlist_items"):

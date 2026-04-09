@@ -12,7 +12,7 @@ import ManagementTab from '../components/collection/ManagementTab';
 import EditCardModal from '../components/collection/EditCardModal';
 import type { CollectionCard } from '../types/card';
 
-const GAMES = ['All', 'Magic: The Gathering', 'Pokémon', 'Sports Cards', 'Collectibles'];
+const GAMES = ['All', 'Magic: The Gathering', 'Pokémon', 'Sports Cards', 'Collectibles', 'Coins'];
 const TABS = ['🗂️ Collection', '🖼️ Gallery', '📈 Investment', '⭐ Watchlist', '⬇️⬆️ Import/Export', '🧭 Management'];
 
 const SPORTS = [
@@ -44,8 +44,10 @@ export default function CollectionPage() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
   const DEFAULT_COL_WIDTHS: Record<string, number> = {
-    checkbox: 28, name: 180, set_name: 150, card_number: 60,
-    game: 110, year: 60, quantity: 50, variant: 110, price_usd: 80, paid: 80, actions: 60,
+    checkbox: 28, name: 180, set_name: 150, card_number: 100,
+    game: 110, year: 60, quantity: 50, variant: 110,
+    denomination: 72, silver: 62, cert_number: 90,
+    price_usd: 80, paid: 80, actions: 60,
   };
   const [colWidths, setColWidths] = useState<Record<string, number>>(DEFAULT_COL_WIDTHS);
 
@@ -76,7 +78,8 @@ export default function CollectionPage() {
   // Status message
   const [actionMsg, setActionMsg] = useState('');
 
-  const game = scope === 'All' ? undefined : scope;
+  const game   = scope === 'All' ? undefined : scope;
+  const isCoin = scope === 'Coins';
   const { data, isLoading } = useCollection(currentOwnerId, currentProfileId, game);
   const { data: owners = [] } = useOwners();
   const updateCard = useUpdateCard();
@@ -279,7 +282,7 @@ export default function CollectionPage() {
           {/* Filter bar */}
           <div style={{ display: 'flex', gap: 8, marginBottom: '1rem', flexWrap: 'wrap' }}>
             <input
-              placeholder={scope === 'Sports Cards' ? 'Player…' : 'Card Name…'}
+              placeholder={scope === 'Sports Cards' ? 'Player…' : scope === 'Coins' ? 'Coin Name…' : 'Card Name…'}
               value={playerFilter}
               onChange={(e) => setPlayerFilter(e.target.value)}
               style={{ padding: '6px 10px', borderRadius: 4, border: '1px solid #ccc', fontSize: '0.85rem', flex: '1 1 150px', minWidth: 120 }}
@@ -291,7 +294,7 @@ export default function CollectionPage() {
               style={{ padding: '6px 10px', borderRadius: 4, border: '1px solid #ccc', fontSize: '0.85rem', flex: '1 1 160px', minWidth: 120 }}
             />
             <input
-              placeholder={scope === 'Sports Cards' ? 'Insert…' : 'Variant…'}
+              placeholder={scope === 'Sports Cards' ? 'Insert…' : scope === 'Coins' ? 'Grade…' : 'Variant…'}
               value={insertFilter}
               onChange={(e) => setInsertFilter(e.target.value)}
               style={{ padding: '6px 10px', borderRadius: 4, border: '1px solid #ccc', fontSize: '0.85rem', flex: '1 1 140px', minWidth: 100 }}
@@ -400,14 +403,17 @@ export default function CollectionPage() {
                   {resizeHandle('checkbox')}
                 </th>
                 <th style={thSort('name')} onClick={() => handleSort('name')}>Name{sortIndicator('name')}{resizeHandle('name')}</th>
-                <th style={thSort('set_name')} onClick={() => handleSort('set_name')}>{scope === 'Collectibles' ? 'Line / Series' : 'Set'}{sortIndicator('set_name')}{resizeHandle('set_name')}</th>
-                <th style={thSort('card_number')} onClick={() => handleSort('card_number')}>{scope === 'Collectibles' ? 'Manufacturer' : '#'}{sortIndicator('card_number')}{resizeHandle('card_number')}</th>
+                <th style={thSort('set_name')} onClick={() => handleSort('set_name')}>{scope === 'Collectibles' ? 'Line / Series' : scope === 'Coins' ? 'Series' : 'Set'}{sortIndicator('set_name')}{resizeHandle('set_name')}</th>
+                <th style={thSort('card_number')} onClick={() => handleSort('card_number')}>{scope === 'Collectibles' ? 'Manufacturer' : scope === 'Coins' ? 'Date' : '#'}{sortIndicator('card_number')}{resizeHandle('card_number')}</th>
                 {(scope === 'All' || scope === 'Sports Cards' || scope === 'Collectibles') && (
                   <th style={thSort('game')} onClick={() => handleSort('game')}>{scope === 'All' ? 'Collection' : scope === 'Sports Cards' ? 'Sport' : 'Game'}{sortIndicator('game')}{resizeHandle('game')}</th>
                 )}
                 <th style={thSort('year')} onClick={() => handleSort('year')}>Year{sortIndicator('year')}{resizeHandle('year')}</th>
                 <th style={thSort('quantity')} onClick={() => handleSort('quantity')}>Qty{sortIndicator('quantity')}{resizeHandle('quantity')}</th>
-                <th style={thSort('variant')} onClick={() => handleSort('variant')}>{scope === 'Collectibles' ? 'Condition' : scope === 'Sports Cards' ? 'Insert' : 'Variant'}{sortIndicator('variant')}{resizeHandle('variant')}</th>
+                <th style={thSort('variant')} onClick={() => handleSort('variant')}>{scope === 'Collectibles' ? 'Condition' : scope === 'Sports Cards' ? 'Insert' : scope === 'Coins' ? 'Grade' : 'Variant'}{sortIndicator('variant')}{resizeHandle('variant')}</th>
+                {isCoin && <th style={thSort('denomination')} onClick={() => handleSort('denomination')}>Denom.{sortIndicator('denomination')}{resizeHandle('denomination')}</th>}
+                {isCoin && <th style={{ ...thSort('silver'), whiteSpace: 'nowrap' }}>Silver %{resizeHandle('silver')}</th>}
+                {isCoin && <th style={thSort('cert_number')}>Cert #{resizeHandle('cert_number')}</th>}
                 <th style={thSort('price_usd')} onClick={() => handleSort('price_usd')}>Value{sortIndicator('price_usd')}{resizeHandle('price_usd')}</th>
                 <th style={thSort('paid')} onClick={() => handleSort('paid')}>Paid{sortIndicator('paid')}{resizeHandle('paid')}</th>
                 <th style={{ padding: '6px 8px', width: colWidths.actions, position: 'relative' }}>{resizeHandle('actions')}</th>
@@ -433,7 +439,21 @@ export default function CollectionPage() {
                       </a>
                     ) : card.name}
                   </td>
-                  <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 0 }}>{card.set_name}</td>
+                  <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 0 }}>
+                    {/* For coins: link Series name to the series price-guide page.
+                        set_code holds the series URL (new records); older records fall
+                        back to card.link which was the series URL before this fix. */}
+                    {isCoin && (card.set_code || card.link) ? (
+                      <a
+                        href={(card.set_code || card.link)!}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ color: '#4c6ef5', textDecoration: 'none' }}
+                      >
+                        {card.set_name}
+                      </a>
+                    ) : card.set_name}
+                  </td>
                   <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 0 }}>{scope === 'Collectibles' ? (card.manufacturer || '—') : card.card_number}</td>
                   {(scope === 'All' || scope === 'Sports Cards' || scope === 'Collectibles') && (
                     <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 0 }}>{scope === 'Sports Cards' ? (card.sport || card.game) : card.game}</td>
@@ -453,11 +473,14 @@ export default function CollectionPage() {
                       <span onClick={() => setEditId(card.id)} style={{ cursor: 'pointer' }}>{card.quantity}</span>
                     )}
                   </td>
-                  <td>{card.variant || '—'}</td>
+                  <td>{isCoin ? (card.grade || card.variant || '—') : (card.variant || '—')}</td>
+                  {isCoin && <td style={{ fontSize: '0.82rem' }}>{card.denomination || '—'}</td>}
+                  {isCoin && <td style={{ fontSize: '0.82rem' }}>{card.silver_amount != null ? `${+(card.silver_amount * 100).toFixed(1)}%` : '—'}</td>}
+                  {isCoin && <td style={{ fontSize: '0.82rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{card.serial_number || '—'}</td>}
                   <td>${(card.price_usd || 0).toFixed(2)}</td>
                   <td>${(card.paid || 0).toFixed(2)}</td>
                   <td style={{ padding: '5px 8px' }}>
-                    {(card.game === 'Sports Cards' || card.game === 'Collectibles') && (
+                    {(card.game === 'Sports Cards' || card.game === 'Collectibles' || card.game === 'Coins') && (
                       <button
                         onClick={() => setEditCard(card)}
                         style={{ padding: '2px 10px', fontSize: '0.78rem', border: '1px solid #ccc', borderRadius: 4, background: '#f8f9fa', cursor: 'pointer' }}

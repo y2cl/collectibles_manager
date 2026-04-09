@@ -25,6 +25,13 @@ export interface SportsSearchParams {
   force_refresh?: boolean;
 }
 
+export interface CoinSearchParams {
+  name: string;
+  year?: string;
+  mint_mark?: string;
+  force_refresh?: boolean;
+}
+
 export const searchApi = {
   mtg: (params: MtgSearchParams) =>
     client.get<SearchResponse>('/api/search/mtg', { params }).then((r) => r.data),
@@ -34,6 +41,9 @@ export const searchApi = {
 
   sports: (params: SportsSearchParams) =>
     client.get<SearchResponse>('/api/search/sports', { params }).then((r) => r.data),
+
+  coins: (params: CoinSearchParams) =>
+    client.get<SearchResponse>('/api/search/coins', { params }).then((r) => r.data),
 
   /** @deprecated use sports() */
   baseball: (params: SportsSearchParams) =>

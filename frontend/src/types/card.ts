@@ -27,11 +27,29 @@ export interface CardResult {
   price_low?: number;
   price_mid?: number;
   price_market?: number;
-  prices_map?: Record<string, { low: number; mid: number; market: number }>;
+  // Pokémon: Record<variant, {low, mid, market}>  |  Coins: Record<grade, price_number>
+  prices_map?: Record<string, { low: number; mid: number; market: number } | number>;
   has_nonfoil: boolean;
   has_foil: boolean;
   source: string;
   artist: string;
+  // Coin-specific (auto-populated from NGC)
+  denomination?: string;    // e.g. "$1.00", "$0.25"
+  country?: string;         // e.g. "USA"
+  coin_or_bill?: string;    // "Coin" | "Bill"
+  silver_amount?: number;   // decimal, e.g. 0.90 = 90% silver
+  mint_mark?: string;       // e.g. "S", "D", "CC"
+  // Coin type selector (MS / MS PL / MS DPL etc.)
+  coin_type_options?: string[];
+  coin_types_data?: Record<string, {
+    prices_map?: Record<string, number>;
+    price_usd?: number;
+    price_low?: number | null;
+    price_market?: number | null;
+    link?: string;
+    image_url?: string;
+    image_url_back?: string;
+  }>;
 }
 
 export interface SearchResponse {
@@ -67,6 +85,12 @@ export interface CollectionCard {
   price_usd: number;
   price_usd_foil: number;
   price_usd_etched: number;
+  // Coin-specific fields
+  denomination?: string;    // face value, e.g. "$1.00"
+  country?: string;         // e.g. "USA"
+  coin_or_bill?: string;    // "Coin" | "Bill"
+  silver_amount?: number;   // decimal, e.g. 0.90 = 90% silver
+  mint_mark?: string;       // e.g. "S", "D", "CC"
   quantity: number;
   variant: string;
   paid: number;
@@ -147,4 +171,10 @@ export interface CardAddRequest {
   serial_number?: string;
   print_run?: string;
   rc?: boolean;
+  // Coin-specific
+  denomination?: string;
+  country?: string;
+  coin_or_bill?: string;
+  silver_amount?: number;
+  mint_mark?: string;
 }

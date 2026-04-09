@@ -6,7 +6,7 @@ import { useSettingsStore } from '../store/settingsStore';
 import { useAppearanceStore, DEFAULTS, PRESETS, FONT_OPTIONS } from '../store/appearanceStore';
 import type { AppSettings, ApiSourceConfig } from '../types/settings';
 
-const TABS = ['General', 'Appearance', 'Data Sources', 'Debug', 'Change Log'];
+const TABS = ['General', 'Appearance', 'Data Sources', 'Debug', 'Change Log', 'About'];
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState(0);
@@ -35,6 +35,7 @@ export default function SettingsPage() {
       {activeTab === 2 && <DataSourcesSettings />}
       {activeTab === 3 && <DebugSettings />}
       {activeTab === 4 && <ChangeLogSettings />}
+      {activeTab === 5 && <AboutSettings />}
     </div>
   );
 }
@@ -686,6 +687,101 @@ function AppPreview({ store }: { store: AppearanceState }) {
         <div style={{ marginTop: 8, fontSize: '10px' }}>
           Sample <span style={{ color: store.accent, cursor: 'pointer' }}>link text</span> in accent colour.
         </div>
+      </div>
+    </div>
+  );
+}
+
+function AboutSettings() {
+  const APP_VERSION = '2.3.0';
+
+  const sectionStyle: React.CSSProperties = {
+    background: '#fff', border: '1px solid #e0e4f0', borderRadius: 8,
+    padding: '24px 28px', marginBottom: '1rem',
+  };
+  const headingStyle: React.CSSProperties = {
+    margin: '0 0 0.5rem', fontSize: '1rem', fontWeight: 700, color: '#222',
+  };
+  const textStyle: React.CSSProperties = {
+    fontSize: '0.9rem', color: '#444', lineHeight: 1.7, margin: '0 0 0.5rem',
+  };
+  const linkStyle: React.CSSProperties = {
+    color: '#4c6ef5', textDecoration: 'none', fontWeight: 600,
+  };
+  const badgeStyle: React.CSSProperties = {
+    display: 'inline-block', background: '#eef1ff', color: '#3b5bdb',
+    borderRadius: 6, padding: '2px 10px', fontSize: '0.85rem',
+    fontWeight: 700, border: '1px solid #c5cff7',
+  };
+
+  return (
+    <div>
+      {/* Logo / version block */}
+      <div style={{ ...sectionStyle, display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
+        <div>
+          <div style={{ fontSize: '2.4rem', lineHeight: 1 }}>💳</div>
+        </div>
+        <div>
+          <h2 style={{ margin: '0 0 4px', fontSize: '1.3rem', fontWeight: 700 }}>
+            Collectibles Manager
+          </h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+            <span style={badgeStyle}>v{APP_VERSION}</span>
+          </div>
+          <p style={{ ...textStyle, margin: 0 }}>
+            A personal collection tracker for Magic: The Gathering, Pokémon, Sports Cards, Coins, and more.
+          </p>
+        </div>
+      </div>
+
+      {/* About */}
+      <div style={sectionStyle}>
+        <h3 style={headingStyle}>About</h3>
+        <p style={textStyle}>
+          Collectibles Manager is a self-hosted app for tracking and valuing your collectibles. Search cards and
+          coins using live data from Scryfall, Pokémon TCG API, Sports Card Database, and the NGC Price Guide,
+          then save them to your personal collection with pricing, grades, and images.
+        </p>
+        <p style={textStyle}>
+          Features include multi-owner support, portfolio investment tracking, import/export, a built-in
+          watchlist, and automatic price updates — all running locally with no subscription required.
+        </p>
+      </div>
+
+      {/* Links */}
+      <div style={sectionStyle}>
+        <h3 style={headingStyle}>Links</h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: '1.1rem' }}>🌐</span>
+            <span style={textStyle}>
+              <a href="https://y2cl.net" target="_blank" rel="noreferrer" style={linkStyle}>
+                y2cl.net
+              </a>
+              {' '}— y2cl home
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Build info */}
+      <div style={{ ...sectionStyle, background: '#fafbff' }}>
+        <h3 style={headingStyle}>Build Info</h3>
+        <table style={{ fontSize: '0.85rem', borderCollapse: 'collapse', width: '100%' }}>
+          <tbody>
+            {[
+              ['Version',  APP_VERSION],
+              ['Frontend', 'React 18 + TypeScript + Vite'],
+              ['Backend',  'Python · FastAPI · SQLite'],
+              ['Pricing',  'Scryfall · NGC · Pokémon TCG API · Sports Card Database'],
+            ].map(([label, value]) => (
+              <tr key={label} style={{ borderBottom: '1px solid #eef0f8' }}>
+                <td style={{ padding: '6px 0', color: '#888', width: 120, fontWeight: 600 }}>{label}</td>
+                <td style={{ padding: '6px 0', color: '#333' }}>{value}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );

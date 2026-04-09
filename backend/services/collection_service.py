@@ -134,6 +134,12 @@ def add_card(db: Session, owner_id_slug: str, profile_id: str, card_data: dict,
         signed=card_data.get("signed", ""),
         altered=card_data.get("altered", ""),
         notes=card_data.get("notes", ""),
+        # Coin-specific fields
+        denomination=card_data.get("denomination"),
+        country=card_data.get("country"),
+        coin_or_bill=card_data.get("coin_or_bill"),
+        silver_amount=card_data.get("silver_amount"),
+        mint_mark=card_data.get("mint_mark"),
         timestamp=datetime.utcnow(),
     )
     db.add(new_card)

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..schemas.card import SearchResponse, CardResult
-from ..services.search_service import search_mtg, search_pokemon, search_sports
+from ..services.search_service import search_mtg, search_pokemon, search_sports, search_coins
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 
@@ -38,6 +38,14 @@ def _to_card_result(card: dict) -> CardResult:
         has_foil=card.get("has_foil", False),
         source=card.get("source", ""),
         artist=card.get("artist", ""),
+        # Coin-specific
+        denomination=card.get("denomination"),
+        country=card.get("country"),
+        coin_or_bill=card.get("coin_or_bill"),
+        silver_amount=card.get("silver_amount"),
+        mint_mark=card.get("mint_mark"),
+        coin_type_options=card.get("coin_type_options"),
+        coin_types_data=card.get("coin_types_data"),
     )
 
 
@@ -105,6 +113,29 @@ def search_sports_endpoint(
         team=team or "",
         set_name=set_name or "",
         card_number=card_number or "",
+        db=db,
+        force_refresh=force_refresh,
+    )
+    return SearchResponse(
+        cards=[_to_card_result(c) for c in cards_raw],
+        total=total,
+        shown=shown,
+        source=source,
+    )
+
+
+@router.get("/coins", response_model=SearchResponse)
+def search_coins_endpoint(
+    name: str = Query(..., description="Coin name or series to search (e.g. 'Morgan Dollar', 'Lincoln Cent')"),
+    year: Optional[str] = Query(None, description="Mint year filter (e.g. '1921')"),
+    mint_mark: Optional[str] = Query(None, description="Mint mark filter (e.g. 'D', 'S', 'O')"),
+    force_refresh: bool = Query(False, description="Skip local cache and fetch live from NGC / USA Coin Book"),
+    db: Session = Depends(get_db),
+):
+    cards_raw, shown, total, source = search_coins(
+        coin_name=name,
+        year=year or "",
+        mint_mark=mint_mark or "",
         db=db,
         force_refresh=force_refresh,
     )
