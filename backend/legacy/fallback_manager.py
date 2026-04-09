@@ -20,12 +20,14 @@ FALLBACK_BASE_DIR = os.path.join(SCRIPT_DIR, "fallback_data")
 # Fallback data paths (using absolute paths)
 POKEMON_DIR = os.path.join(FALLBACK_BASE_DIR, "Pokemon")
 MTG_DIR = os.path.join(FALLBACK_BASE_DIR, "MTG")
+COINS_DIR = os.path.join(FALLBACK_BASE_DIR, "Coins")
 
 # CSV file paths
 POKEMON_SETS_CSV = os.path.join(POKEMON_DIR, "pokemonsets.csv")
 POKEMON_CARDS_CSV = os.path.join(POKEMON_DIR, "pokemoncards.csv")
 MTG_SETS_CSV = os.path.join(MTG_DIR, "mtgsets.csv")
 MTG_CARDS_CSV = os.path.join(MTG_DIR, "mtgcards.csv")
+COINS_CSV = os.path.join(COINS_DIR, "coinscatalog.csv")
 
 # Image directories
 POKEMON_CARD_IMAGES = os.path.join(POKEMON_DIR, "CardImages")
@@ -36,7 +38,7 @@ MTG_SET_IMAGES = os.path.join(MTG_DIR, "SetImages")
 def ensure_directories():
     """Create fallback data directories if they don't exist."""
     dirs = [
-        POKEMON_DIR, MTG_DIR,
+        POKEMON_DIR, MTG_DIR, COINS_DIR,
         POKEMON_CARD_IMAGES, POKEMON_SET_IMAGES,
         MTG_CARD_IMAGES, MTG_SET_IMAGES
     ]
@@ -599,6 +601,143 @@ def find_mtg_cards_local(name: str, set_hint: str = "", collector_number: str = 
                         'has_foil': True if row.get('prices_usd_foil') else False
                     }
                     results.append(card)
+                except Exception:
+                    continue
+    except Exception:
+        return []
+    return results
+
+
+# ---------- Local query helpers for Coins ----------
+
+_COINS_FIELDNAMES = [
+    "id", "name", "series", "denomination", "country", "coin_or_bill",
+    "year", "mint_mark", "silver_amount",
+    "card_number", "image_url", "image_url_back", "link", "set_code", "prices_map",
+    "price_usd", "price_low", "price_market",
+    "coin_type_options", "coin_types_data",
+    "source", "fetched_at",
+]
+
+
+def store_coin(coin_data: Dict[str, Any]) -> bool:
+    """Store a coin result to the local CSV cache. Deduplicates by id."""
+    try:
+        existing = _get_existing_ids(COINS_CSV, "id")
+        coin_id = str(coin_data.get("id", ""))
+        if coin_id and coin_id in existing:
+            return True  # already cached
+
+        silver = coin_data.get("silver_amount")
+        flat_data = {
+            "id": coin_id,
+            "name": coin_data.get("name", ""),
+            "series": coin_data.get("set", coin_data.get("name", "")),
+            "denomination": coin_data.get("denomination", "") or "",
+            "country": coin_data.get("country", "") or "",
+            "coin_or_bill": coin_data.get("coin_or_bill", "") or "",
+            "year": coin_data.get("year", ""),
+            "mint_mark": coin_data.get("mint_mark", "") or "",
+            "silver_amount": "" if silver is None else str(silver),
+            "card_number": coin_data.get("card_number", ""),
+            "image_url": coin_data.get("image_url", ""),
+            "image_url_back": coin_data.get("image_url_back", "") or "",
+            "link": coin_data.get("link", ""),
+            "set_code": coin_data.get("set_code", "") or "",
+            "prices_map": json.dumps(coin_data.get("prices_map") or {}),
+            "price_usd": coin_data.get("price_usd", 0.0),
+            "price_low": coin_data.get("price_low", ""),
+            "price_market": coin_data.get("price_market", ""),
+            "coin_type_options": json.dumps(coin_data.get("coin_type_options") or []),
+            "coin_types_data":   json.dumps(coin_data.get("coin_types_data") or {}),
+            "source": coin_data.get("source", ""),
+            "fetched_at": datetime.utcnow().isoformat(),
+        }
+        append_to_csv(COINS_CSV, flat_data, _COINS_FIELDNAMES)
+        return True
+    except Exception as e:
+        logger.error("Failed to store coin %r: %s", coin_data.get("name", "?"), e)
+        return False
+
+
+def find_coins_local(
+    name: str,
+    year: str = "",
+    mint_mark: str = "",
+) -> List[Dict[str, Any]]:
+    """
+    Search locally cached coins CSV.
+    Filters by name substring (case-insensitive), optional year, optional mint mark.
+    Returns UI-ready dicts matching the coin search response shape.
+    """
+    results: List[Dict[str, Any]] = []
+    nq = (name or "").strip().lower()
+    yq = (year or "").strip()
+    mq = (mint_mark or "").strip().upper()
+
+    try:
+        if not os.path.exists(COINS_CSV):
+            return []
+        with open(COINS_CSV, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    nm = (row.get("name") or "").lower()
+                    if nq and nq not in nm:
+                        continue
+                    if yq and str(row.get("year") or "").strip() != yq:
+                        continue
+                    if mq:
+                        card_num = (row.get("card_number") or "").upper()
+                        if mq not in card_num:
+                            continue
+
+                    prices_map: Dict[str, Any] = {}
+                    try:
+                        prices_map = json.loads(row.get("prices_map") or "{}")
+                    except Exception:
+                        prices_map = {}
+
+                    def _to_f(x: Any) -> float:
+                        try:
+                            return float(x) if x not in (None, "", "None") else 0.0
+                        except Exception:
+                            return 0.0
+
+                    silver_str = row.get("silver_amount", "")
+                    silver_val = float(silver_str) if silver_str not in ("", None, "None") else None
+                    results.append({
+                        "game": "Coins",
+                        "name": row.get("name") or "",
+                        "set": row.get("series") or "",
+                        "set_code": row.get("set_code") or "",
+                        "year": row.get("year") or "",
+                        "card_number": row.get("card_number") or "",
+                        "image_url": row.get("image_url") or "",
+                        "image_url_back": row.get("image_url_back") or "",
+                        "link": row.get("link") or "",
+                        "price_usd": _to_f(row.get("price_usd")),
+                        "price_usd_foil": 0.0,
+                        "price_usd_etched": 0.0,
+                        "price_low": _to_f(row.get("price_low")) or None,
+                        "price_mid": None,
+                        "price_market": _to_f(row.get("price_market")) or None,
+                        "prices_map": prices_map,
+                        "has_nonfoil": False,
+                        "has_foil": False,
+                        "source": "Local Cache",
+                        "artist": "",
+                        "variant": "",
+                        "quantity": 1,
+                        # Coin-specific
+                        "denomination": row.get("denomination") or None,
+                        "country": row.get("country") or None,
+                        "coin_or_bill": row.get("coin_or_bill") or None,
+                        "silver_amount": silver_val,
+                        "mint_mark": row.get("mint_mark") or None,
+                        "coin_type_options": json.loads(row.get("coin_type_options") or "[]"),
+                        "coin_types_data":   json.loads(row.get("coin_types_data") or "{}"),
+                    })
                 except Exception:
                     continue
     except Exception:

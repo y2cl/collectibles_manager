@@ -2,7 +2,7 @@
 Pydantic schemas for cards, collection entries, and watchlist items.
 """
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel
 
 
@@ -32,6 +32,17 @@ class CardResult(BaseModel):
     price_mid: Optional[float] = None
     price_market: Optional[float] = None
     prices_map: Optional[Dict[str, Any]] = None  # raw Pokémon variant prices
+
+    # Coin-specific fields (auto-populated from NGC scraper)
+    denomination: Optional[str] = None   # face value, e.g. "$1.00", "$0.25"
+    country: Optional[str] = None        # e.g. "USA"
+    coin_or_bill: Optional[str] = None   # "Coin" | "Bill"
+    silver_amount: Optional[float] = None  # decimal, e.g. 0.90 = 90% silver
+    mint_mark: Optional[str] = None      # e.g. "S", "D", "CC", "" for Philadelphia
+
+    # Coin type selector (MS / MS PL / MS DPL etc.)
+    coin_type_options: Optional[List[str]] = None
+    coin_types_data: Optional[Dict[str, Any]] = None
 
     # Availability flags (MTG)
     has_nonfoil: bool = True
@@ -78,6 +89,13 @@ class CollectionCardBase(BaseModel):
     price_usd_foil: float = 0.0
     price_usd_etched: float = 0.0
 
+    # Coin-specific fields
+    denomination: Optional[str] = None
+    country: Optional[str] = None
+    coin_or_bill: Optional[str] = None
+    silver_amount: Optional[float] = None
+    mint_mark: Optional[str] = None
+
     quantity: int = 1
     variant: str = ""
     paid: float = 0.0
@@ -119,6 +137,12 @@ class CollectionCardUpdate(BaseModel):
     price_low: Optional[float] = None
     price_mid: Optional[float] = None
     price_market: Optional[float] = None
+    # Coin fields
+    denomination: Optional[str] = None
+    country: Optional[str] = None
+    coin_or_bill: Optional[str] = None
+    silver_amount: Optional[float] = None
+    mint_mark: Optional[str] = None
 
 
 class CollectionCardRead(CollectionCardBase):

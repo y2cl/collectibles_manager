@@ -247,6 +247,70 @@ def search_sports(
     return [], 0, 0, "No results"
 
 
+def search_coins(
+    coin_name: str,
+    year: str = "",
+    mint_mark: str = "",
+    db: Optional[Session] = None,
+    force_refresh: bool = False,
+) -> Tuple[List[Dict], int, int, str]:
+    """
+    Coin search — local cache first, then NGC Price Guide, then USA Coin Book.
+
+    force_refresh=True: skip cache, hit live sources, repopulate cache.
+    """
+    cfg = _get_api_config(db) if db else {}
+    fallback_enabled = cfg.get("fallback_enabled", True)
+
+    # ── 1. Local cache (unless force_refresh) ────────────────────────────────
+    if fallback_enabled and not force_refresh:
+        try:
+            from ..legacy.fallback_manager import find_coins_local
+            cards = find_coins_local(coin_name, year, mint_mark)
+            if cards:
+                logger.debug("Coins cache hit: %d entries for %r", len(cards), coin_name)
+                return cards, len(cards), len(cards), "Local Cache"
+        except Exception as e:
+            logger.warning("Coins local cache read error: %s", e)
+
+    # ── 2. NGC Price Guide (primary) ──────────────────────────────────────────
+    try:
+        from ..external.ngc_coins import search_ngc_coins
+        cards, shown, total, source = search_ngc_coins(coin_name, year, mint_mark)
+        if cards:
+            if fallback_enabled:
+                try:
+                    from ..legacy.fallback_manager import store_coin
+                    for c in cards:
+                        store_coin(c)
+                except Exception:
+                    pass
+            logger.debug("NGC hit: %d coins for %r", len(cards), coin_name)
+            return cards, shown, total, source
+        logger.info("NGC returned no results for %r — trying USA Coin Book", coin_name)
+    except Exception as e:
+        logger.warning("NGC search failed for %r: %s — falling back to USA Coin Book", coin_name, e)
+
+    # ── 3. USA Coin Book (fallback) ───────────────────────────────────────────
+    try:
+        from ..external.usacoinbook import search_usacoinbook
+        cards, shown, total, source = search_usacoinbook(coin_name, year, mint_mark)
+        if cards:
+            if fallback_enabled:
+                try:
+                    from ..legacy.fallback_manager import store_coin
+                    for c in cards:
+                        store_coin(c)
+                except Exception:
+                    pass
+            logger.debug("USA Coin Book hit: %d coins for %r", len(cards), coin_name)
+            return cards, shown, total, source
+    except Exception as e:
+        logger.warning("USA Coin Book search failed for %r: %s", coin_name, e)
+
+    return [], 0, 0, "No results"
+
+
 # Backwards-compatible alias
 def search_baseball(
     player_name: str,

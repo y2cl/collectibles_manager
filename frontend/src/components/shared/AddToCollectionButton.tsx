@@ -9,16 +9,19 @@ interface Props {
   selectedVariant?: string;
   /** Called when the user changes the variant from within this component. */
   onVariantChange?: (v: string) => void;
+  /** For coins: the strike type (MS, MS PL, MS DPL etc.) */
+  selectedCoinType?: string;
 }
 
 
-export default function AddToCollectionButton({ card, selectedVariant, onVariantChange }: Props) {
+export default function AddToCollectionButton({ card, selectedVariant, onVariantChange, selectedCoinType }: Props) {
   const { currentOwnerId, currentProfileId } = useOwnerStore();
   const addCard = useAddCard();
 
-  const isMtg = card.game === 'Magic: The Gathering';
+  const isMtg  = card.game === 'Magic: The Gathering';
+  const isCoin = card.game === 'Coins';
 
-  // Variant is controlled externally for MTG (pills in CardResultCard),
+  // Variant is controlled externally for MTG/Pokémon/Coins (pills in CardResultCard),
   // but we keep a local fallback for non-MTG or standalone usage.
   const [localVariant, setLocalVariant] = useState('');
   const variant = selectedVariant !== undefined ? selectedVariant : localVariant;
@@ -26,6 +29,15 @@ export default function AddToCollectionButton({ card, selectedVariant, onVariant
     setLocalVariant(v);
     onVariantChange?.(v);
   };
+
+  // For coins, use the grade-specific price from prices_map when a grade is selected
+  const effectivePriceUsd: number = (() => {
+    if (isCoin && variant && card.prices_map?.[variant] != null) {
+      const entry = card.prices_map[variant];
+      if (typeof entry === 'number') return entry;
+    }
+    return card.price_usd;
+  })();
 
   const [qty, setQty]   = useState(1);
   const [paid, setPaid] = useState(0);
@@ -47,15 +59,22 @@ export default function AddToCollectionButton({ card, selectedVariant, onVariant
       year:            card.year,
       link:            card.link,
       image_url:       card.image_url,
-      price_usd:       card.price_usd,
+      price_usd:       effectivePriceUsd,
       price_usd_foil:  card.price_usd_foil,
       price_usd_etched:card.price_usd_etched,
       price_low:       card.price_low,
       price_mid:       card.price_mid,
       price_market:    card.price_market,
       quantity:        qty,
-      variant,
+      variant:         (isCoin && selectedCoinType) ? selectedCoinType : variant,
+      grade:           isCoin ? (variant || undefined) : undefined,
       paid,
+      // Coin-specific fields (auto-populated from NGC search)
+      denomination:    card.denomination,
+      country:         card.country,
+      coin_or_bill:    card.coin_or_bill,
+      silver_amount:   card.silver_amount,
+      mint_mark:       card.mint_mark,
     });
   };
 

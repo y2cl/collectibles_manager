@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { searchApi, MtgSearchParams, PokemonSearchParams, SportsSearchParams } from '../api/search';
+import { searchApi, MtgSearchParams, PokemonSearchParams, SportsSearchParams, CoinSearchParams } from '../api/search';
 
 export function useMtgSearch(params: MtgSearchParams, enabled: boolean) {
   return useQuery({
@@ -33,6 +33,15 @@ export function useBaseballSearch(params: SportsSearchParams, enabled: boolean) 
   return useSportsSearch(params, enabled);
 }
 
+export function useCoinSearch(params: CoinSearchParams, enabled: boolean) {
+  return useQuery({
+    queryKey: ['search', 'coins', { ...params, force_refresh: undefined }],
+    queryFn: () => searchApi.coins(params),
+    enabled: enabled && !!params.name,
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
 /**
  * Returns a function that re-fetches any search query with force_refresh=true,
  * then invalidates the cached result so the fresh data is shown.
@@ -40,11 +49,13 @@ export function useBaseballSearch(params: SportsSearchParams, enabled: boolean) 
 export function useForceRefreshSearch() {
   const qc = useQueryClient();
 
-  return async (game: 'mtg' | 'pokemon' | 'sports', params: MtgSearchParams | PokemonSearchParams | SportsSearchParams) => {
+  return async (game: 'mtg' | 'pokemon' | 'sports' | 'coins', params: MtgSearchParams | PokemonSearchParams | SportsSearchParams | CoinSearchParams) => {
     const refreshed = await (game === 'mtg'
       ? searchApi.mtg({ ...(params as MtgSearchParams), force_refresh: true })
       : game === 'pokemon'
       ? searchApi.pokemon({ ...(params as PokemonSearchParams), force_refresh: true })
+      : game === 'coins'
+      ? searchApi.coins({ ...(params as CoinSearchParams), force_refresh: true })
       : searchApi.sports({ ...(params as SportsSearchParams), force_refresh: true })
     );
 

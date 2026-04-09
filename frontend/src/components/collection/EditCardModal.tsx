@@ -13,6 +13,8 @@ const SPORTS = [
 
 const CONDITIONS = ['New', 'Like New', 'Very Good', 'Good', 'Acceptable', 'Poor'];
 
+const COIN_OR_BILL = ['Coin', 'Bill', 'Token', 'Medal', 'Proof Set', 'Mint Set', 'Other'];
+
 interface Props {
   card: CollectionCard;
   onSave: (id: number, payload: Record<string, unknown>) => Promise<void>;
@@ -22,6 +24,7 @@ interface Props {
 export default function EditCardModal({ card, onSave, onClose }: Props) {
   const isSports      = card.game === 'Sports Cards';
   const isCollectible = card.game === 'Collectibles';
+  const isCoin        = card.game === 'Coins';
 
   const [form, setForm] = useState({
     name:            card.name ?? '',
@@ -41,6 +44,13 @@ export default function EditCardModal({ card, onSave, onClose }: Props) {
     image_url:       card.image_url ?? '',
     paid:            String(card.paid ?? ''),
     price_usd:       String(card.price_usd ?? ''),
+    // Coin-specific
+    denomination:    card.denomination ?? '',
+    country:         card.country ?? 'USA',
+    coin_or_bill:    card.coin_or_bill ?? 'Coin',
+    silver_amount:   card.silver_amount != null ? String(Math.round(card.silver_amount * 1000) / 10) : '',
+    mint_mark:       card.mint_mark ?? '',
+    notes:           card.notes ?? '',
   });
   const [saving, setSaving] = useState(false);
   const [error, setError]   = useState('');
@@ -56,6 +66,9 @@ export default function EditCardModal({ card, onSave, onClose }: Props) {
     setSaving(true);
     setError('');
     try {
+      const silverVal = isCoin && form.silver_amount.trim()
+        ? (parseFloat(form.silver_amount) / 100) || 0
+        : undefined;
       await onSave(card.id, {
         name:            form.name.trim(),
         card_number:     form.card_number.trim() || undefined,
@@ -67,13 +80,20 @@ export default function EditCardModal({ card, onSave, onClose }: Props) {
         upc:             isCollectible ? (form.upc.trim() || undefined) : undefined,
         print_run:       isSports ? (form.print_run.trim() || undefined) : undefined,
         grading_company: isSports ? (form.grading_company.trim() || undefined) : undefined,
-        grade:           isSports ? (form.grade.trim() || undefined) : undefined,
-        serial_number:   isSports ? (form.serial_number.trim() || undefined) : undefined,
+        grade:           (isSports || isCoin) ? (form.grade.trim() || undefined) : undefined,
+        serial_number:   isSports ? (form.serial_number.trim() || undefined) : (isCoin ? (form.serial_number.trim() || undefined) : undefined),
         signed:          isSports ? (form.signed ? 'true' : '') : undefined,
         rc:              isSports ? (form.rc || undefined) : undefined,
         image_url:       form.image_url.trim() || undefined,
         paid:            parseFloat(form.paid) || 0,
         price_usd:       parseFloat(form.price_usd) || undefined,
+        notes:           form.notes.trim() || undefined,
+        // Coin-specific
+        denomination:    isCoin ? (form.denomination.trim() || undefined) : undefined,
+        country:         isCoin ? (form.country.trim() || undefined) : undefined,
+        coin_or_bill:    isCoin ? (form.coin_or_bill || undefined) : undefined,
+        silver_amount:   silverVal,
+        mint_mark:       isCoin ? (form.mint_mark.trim() || undefined) : undefined,
       });
       onClose();
     } catch {
@@ -108,7 +128,7 @@ export default function EditCardModal({ card, onSave, onClose }: Props) {
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <h2 style={{ margin: 0, fontSize: '1.1rem' }}>
-            Edit {isSports ? 'Sports Card' : isCollectible ? 'Collectible' : 'Card'}
+            Edit {isSports ? 'Sports Card' : isCollectible ? 'Collectible' : isCoin ? 'Coin' : 'Card'}
           </h2>
           <button
             onClick={onClose}
@@ -133,25 +153,25 @@ export default function EditCardModal({ card, onSave, onClose }: Props) {
           {/* Name row */}
           <div style={rowStyle}>
             <label style={labelStyle}>
-              {isSports ? 'Player Name *' : 'Name *'}
+              {isSports ? 'Player Name *' : isCoin ? 'Coin Name *' : 'Name *'}
               <input style={inputStyle} value={form.name} onChange={set('name')} />
             </label>
             {!isCollectible && (
               <label style={{ ...labelStyle, flex: '0 0 120px' }}>
-                Card #
+                {isCoin ? 'Date / Variety' : 'Card #'}
                 <input style={inputStyle} value={form.card_number} onChange={set('card_number')} />
               </label>
             )}
           </div>
 
-          {/* Year / Set / Insert (or Condition) / Serial # */}
+          {/* Year / Set / Strike Type (coins) or Insert (MTG/Pokémon) or Condition (collectibles) */}
           <div style={rowStyle}>
             <label style={{ ...labelStyle, flex: '0 0 90px' }}>
               Year
               <input style={inputStyle} value={form.year} onChange={set('year')} />
             </label>
             <label style={labelStyle}>
-              {isCollectible ? 'Line / Series' : 'Set'}
+              {isCollectible ? 'Line / Series' : isCoin ? 'Series' : 'Set'}
               <input style={inputStyle} value={form.set_name} onChange={set('set_name')} />
             </label>
             {isCollectible ? (
@@ -160,6 +180,11 @@ export default function EditCardModal({ card, onSave, onClose }: Props) {
                 <select style={inputStyle} value={form.variant} onChange={set('variant')}>
                   {CONDITIONS.map((c) => <option key={c}>{c}</option>)}
                 </select>
+              </label>
+            ) : isCoin ? (
+              <label style={{ ...labelStyle, flex: '0 0 110px' }}>
+                Strike Type
+                <input style={inputStyle} value={form.variant} onChange={set('variant')} placeholder="MS, MS PL, PF…" />
               </label>
             ) : (
               <label style={labelStyle}>
@@ -226,6 +251,63 @@ export default function EditCardModal({ card, onSave, onClose }: Props) {
                   </a>
                 </div>
               )}
+            </>
+          )}
+
+          {/* Coin-specific fields */}
+          {isCoin && (
+            <>
+              <div style={{ borderTop: '1px solid #eee', paddingTop: 12, marginTop: 2 }}>
+                <div style={{ fontSize: '0.78rem', fontWeight: 600, color: '#888', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  🪙 Coin Details
+                </div>
+                <div style={{ ...rowStyle, flexWrap: 'wrap' }}>
+                  <label style={{ ...labelStyle, flex: '0 0 90px' }}>
+                    Denomination
+                    <input style={inputStyle} value={form.denomination} onChange={set('denomination')} placeholder="e.g. $1.00" />
+                  </label>
+                  <label style={{ ...labelStyle, flex: '0 0 80px' }}>
+                    Mint Mark
+                    <input style={inputStyle} value={form.mint_mark} onChange={set('mint_mark')} placeholder="S, D, CC…" />
+                  </label>
+                  <label style={{ ...labelStyle, flex: '0 0 90px' }}>
+                    Silver %
+                    <input
+                      type="number" min={0} max={100} step={0.1}
+                      style={inputStyle} value={form.silver_amount}
+                      onChange={set('silver_amount')}
+                      placeholder="e.g. 90"
+                    />
+                  </label>
+                  <label style={{ ...labelStyle, flex: '0 0 100px' }}>
+                    Type
+                    <select style={inputStyle} value={form.coin_or_bill} onChange={set('coin_or_bill')}>
+                      {COIN_OR_BILL.map((t) => <option key={t}>{t}</option>)}
+                    </select>
+                  </label>
+                  <label style={{ ...labelStyle, flex: '0 0 90px' }}>
+                    Country
+                    <input style={inputStyle} value={form.country} onChange={set('country')} placeholder="USA" />
+                  </label>
+                  <label style={{ ...labelStyle, flex: '0 0 140px' }}>
+                    NGC Cert #
+                    <input style={inputStyle} value={form.serial_number} onChange={set('serial_number')} placeholder="e.g. 1234567-001" />
+                  </label>
+                  <label style={{ ...labelStyle, flex: '0 0 160px' }}>
+                    NGC Grade
+                    <input style={inputStyle} value={form.grade} onChange={set('grade')} placeholder="e.g. MS-63, MS PL-MS-63" />
+                  </label>
+                </div>
+              </div>
+              <label style={labelStyle}>
+                Notes
+                <textarea
+                  style={{ ...inputStyle, minHeight: 56, resize: 'vertical' }}
+                  value={form.notes}
+                  onChange={set('notes')}
+                  placeholder="Any notes about this coin…"
+                />
+              </label>
             </>
           )}
 

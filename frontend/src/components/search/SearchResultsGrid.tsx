@@ -142,7 +142,7 @@ export default function SearchResultsGrid({
         gap: '1rem',
       }}>
         {sortCards(cards).map((card, i) => (
-          <CardResultCard key={`${card.name}-${card.set_code}-${i}`} card={card} imageWidth={imageWidth} />
+          <CardResultCard key={card.link || `${card.name}-${card.set_code}-${i}`} card={card} imageWidth={imageWidth} />
         ))}
       </div>
     </div>

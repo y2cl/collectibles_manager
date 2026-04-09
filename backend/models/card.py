@@ -45,6 +45,13 @@ class CollectionCard(Base):
     price_usd_foil = Column(Float, default=0.0)
     price_usd_etched = Column(Float, default=0.0)
 
+    # Coin-specific fields
+    denomination = Column(String, nullable=True)   # face value, e.g. "$1.00", "$0.25"
+    country = Column(String, nullable=True)        # e.g. "USA"
+    coin_or_bill = Column(String, nullable=True)   # "Coin" | "Bill"
+    silver_amount = Column(Float, nullable=True)   # silver content as decimal, e.g. 0.90 = 90%
+    mint_mark = Column(String, nullable=True)      # e.g. "S", "D", "CC", "" for Philadelphia
+
     # Collection metadata
     quantity = Column(Integer, default=1)
     variant = Column(String, default="")         # e.g. "nonfoil", "foil", "normal", "holofoil"
@@ -93,6 +100,13 @@ class WatchlistItem(Base):
     price_low = Column(Float, nullable=True)
     price_mid = Column(Float, nullable=True)
     price_market = Column(Float, nullable=True)
+
+    # Coin-specific fields (mirrored from CollectionCard)
+    denomination = Column(String, nullable=True)
+    country = Column(String, nullable=True)
+    coin_or_bill = Column(String, nullable=True)
+    silver_amount = Column(Float, nullable=True)
+    mint_mark = Column(String, nullable=True)
 
     quantity = Column(Integer, default=1)
     variant = Column(String, default="")
