@@ -311,6 +311,69 @@ def search_coins(
     return [], 0, 0, "No results"
 
 
+def search_comics(
+    comic_name: str,
+    db: Optional[Session] = None,
+    force_refresh: bool = False,
+) -> Tuple[List[Dict], int, int, str]:
+    """
+    Phase 1: Search Comic Vine for series/volumes matching the title.
+
+    Returns a list of matching series for the user to select from.
+    """
+    from ..config import settings as app_settings
+    api_key = getattr(app_settings, "comic_vine_api_key", "")
+
+    from ..external.comic_vine import search_volumes
+    volumes, shown, total, source = search_volumes(name=comic_name, api_key=api_key)
+    return volumes, shown, total, source
+
+
+def search_comic_find_issue(
+    series_name: str,
+    issue_number: str,
+    db: Optional[Session] = None,
+) -> Tuple[List[Dict], int, int, str]:
+    """
+    Direct issue search: find a specific issue by series name + issue number.
+
+    Internally searches up to 5 matching volumes, then fetches the issue
+    from each — returning all matches combined.
+    """
+    from ..config import settings as app_settings
+    api_key = getattr(app_settings, "comic_vine_api_key", "")
+
+    from ..external.comic_vine import find_issue_by_series_name
+    issues, shown, total, source = find_issue_by_series_name(
+        series_name=series_name,
+        issue_number=issue_number,
+        api_key=api_key,
+    )
+    return issues, shown, total, source
+
+
+def search_comic_issues(
+    volume_id: str,
+    issue_number: str = "",
+    db: Optional[Session] = None,
+) -> Tuple[List[Dict], int, int, str]:
+    """
+    Phase 2: Get issues for a specific volume (series).
+
+    When issue_number is provided, returns only that issue.
+    """
+    from ..config import settings as app_settings
+    api_key = getattr(app_settings, "comic_vine_api_key", "")
+
+    from ..external.comic_vine import search_volume_issues
+    issues, shown, total, source = search_volume_issues(
+        volume_id=volume_id,
+        issue_number=issue_number,
+        api_key=api_key,
+    )
+    return issues, shown, total, source
+
+
 # Backwards-compatible alias
 def search_baseball(
     player_name: str,

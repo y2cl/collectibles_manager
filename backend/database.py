@@ -55,6 +55,14 @@ def _apply_migrations():
         ("coin_or_bill", "TEXT"),
         ("silver_amount", "REAL"),
         ("mint_mark", "TEXT"),
+        # Comics-specific fields
+        ("issue_number", "TEXT"),
+        ("story_arc", "TEXT"),
+        ("writer", "TEXT"),
+        ("comic_artist", "TEXT"),
+        ("publisher", "TEXT"),
+        ("is_key_issue", "BOOLEAN"),
+        ("cgc_cert_number", "TEXT"),
     ]
     with engine.connect() as conn:
         for table in ("collection_cards", "watchlist_items"):

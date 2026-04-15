@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     justtcg_api_key: str = ""
     upcitemdb_api_key: str = ""   # optional — trial endpoint works without a key (100 req/day)
     serpapi_key: str = ""         # SerpAPI key for Google Images search (250 searches/month free)
+    comic_vine_api_key: str = ""  # Comic Vine API key — register at comicvine.gamespot.com/api/
 
     # Database (relative to project root when run as `uvicorn backend.main:app`)
     database_url: str = "sqlite:///./collectibles.db"
