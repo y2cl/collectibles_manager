@@ -44,6 +44,15 @@ class CardResult(BaseModel):
     coin_type_options: Optional[List[str]] = None
     coin_types_data: Optional[Dict[str, Any]] = None
 
+    # Comics-specific fields
+    issue_number: Optional[str] = None
+    story_arc: Optional[str] = None
+    writer: Optional[str] = None
+    comic_artist: Optional[str] = None
+    publisher: Optional[str] = None
+    is_key_issue: Optional[bool] = False
+    cgc_cert_number: Optional[str] = None
+
     # Availability flags (MTG)
     has_nonfoil: bool = True
     has_foil: bool = False
@@ -96,6 +105,15 @@ class CollectionCardBase(BaseModel):
     silver_amount: Optional[float] = None
     mint_mark: Optional[str] = None
 
+    # Comics-specific fields
+    issue_number: Optional[str] = None
+    story_arc: Optional[str] = None
+    writer: Optional[str] = None
+    comic_artist: Optional[str] = None
+    publisher: Optional[str] = None
+    is_key_issue: Optional[bool] = False
+    cgc_cert_number: Optional[str] = None
+
     quantity: int = 1
     variant: str = ""
     paid: float = 0.0
@@ -143,6 +161,14 @@ class CollectionCardUpdate(BaseModel):
     coin_or_bill: Optional[str] = None
     silver_amount: Optional[float] = None
     mint_mark: Optional[str] = None
+    # Comics fields
+    issue_number: Optional[str] = None
+    story_arc: Optional[str] = None
+    writer: Optional[str] = None
+    comic_artist: Optional[str] = None
+    publisher: Optional[str] = None
+    is_key_issue: Optional[bool] = None
+    cgc_cert_number: Optional[str] = None
 
 
 class CollectionCardRead(CollectionCardBase):

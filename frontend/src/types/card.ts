@@ -50,6 +50,14 @@ export interface CardResult {
     image_url?: string;
     image_url_back?: string;
   }>;
+  // Comics-specific
+  issue_number?: string;
+  story_arc?: string;
+  writer?: string;
+  comic_artist?: string;
+  publisher?: string;
+  is_key_issue?: boolean;
+  cgc_cert_number?: string;
 }
 
 export interface SearchResponse {
@@ -91,6 +99,13 @@ export interface CollectionCard {
   coin_or_bill?: string;    // "Coin" | "Bill"
   silver_amount?: number;   // decimal, e.g. 0.90 = 90% silver
   mint_mark?: string;       // e.g. "S", "D", "CC"
+  // Comics-specific fields
+  issue_number?: string;
+  story_arc?: string;
+  writer?: string;
+  publisher?: string;
+  is_key_issue?: boolean;
+  cgc_cert_number?: string;
   quantity: number;
   variant: string;
   paid: number;
@@ -177,4 +192,12 @@ export interface CardAddRequest {
   coin_or_bill?: string;
   silver_amount?: number;
   mint_mark?: string;
+  // Comics-specific
+  issue_number?: string;
+  story_arc?: string;
+  writer?: string;
+  comic_artist?: string;
+  publisher?: string;
+  is_key_issue?: boolean;
+  cgc_cert_number?: string;
 }

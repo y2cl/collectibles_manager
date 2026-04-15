@@ -52,6 +52,15 @@ class CollectionCard(Base):
     silver_amount = Column(Float, nullable=True)   # silver content as decimal, e.g. 0.90 = 90%
     mint_mark = Column(String, nullable=True)      # e.g. "S", "D", "CC", "" for Philadelphia
 
+    # Comics-specific fields
+    issue_number = Column(String, nullable=True)   # e.g. "300"
+    story_arc = Column(String, nullable=True)      # e.g. "Kraven's Last Hunt"
+    writer = Column(String, nullable=True)         # e.g. "Stan Lee"
+    comic_artist = Column(String, nullable=True)   # e.g. "Steve Ditko" (penciler/artist)
+    publisher = Column(String, nullable=True)      # e.g. "Marvel"
+    is_key_issue = Column(Boolean, default=False, nullable=True)  # first appearance, death, etc.
+    cgc_cert_number = Column(String, nullable=True)  # CGC/CBCS cert number
+
     # Collection metadata
     quantity = Column(Integer, default=1)
     variant = Column(String, default="")         # e.g. "nonfoil", "foil", "normal", "holofoil"
@@ -107,6 +116,15 @@ class WatchlistItem(Base):
     coin_or_bill = Column(String, nullable=True)
     silver_amount = Column(Float, nullable=True)
     mint_mark = Column(String, nullable=True)
+
+    # Comics-specific fields (mirrored from CollectionCard)
+    issue_number = Column(String, nullable=True)
+    story_arc = Column(String, nullable=True)
+    writer = Column(String, nullable=True)
+    comic_artist = Column(String, nullable=True)
+    publisher = Column(String, nullable=True)
+    is_key_issue = Column(Boolean, default=False, nullable=True)
+    cgc_cert_number = Column(String, nullable=True)
 
     quantity = Column(Integer, default=1)
     variant = Column(String, default="")

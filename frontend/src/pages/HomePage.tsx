@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMtgSearch, usePokemonSearch, useCoinSearch, useForceRefreshSearch } from '../hooks/useSearch';
+import { useMtgSearch, usePokemonSearch, useCoinSearch, useComicSearch, useComicIssueSearch, useComicFindIssue, useForceRefreshSearch } from '../hooks/useSearch';
+import type { CardResult } from '../types/card';
 import { useAddCard } from '../hooks/useCollection';
 import { useOwnerStore } from '../store/ownerStore';
 import { lookupApi } from '../api/lookup';
@@ -10,7 +11,7 @@ import { gradingLookupUrl } from '../utils/gradingLookup';
 import SearchResultsGrid from '../components/search/SearchResultsGrid';
 import { useSettingsStore } from '../store/settingsStore';
 
-type Game = 'mtg' | 'pokemon' | 'sports' | 'collectibles' | 'coins';
+type Game = 'mtg' | 'pokemon' | 'sports' | 'collectibles' | 'coins' | 'comics';
 
 const TABS: { id: Game; label: string }[] = [
   { id: 'mtg',          label: '🧙 Magic: The Gathering' },
@@ -18,6 +19,7 @@ const TABS: { id: Game; label: string }[] = [
   { id: 'sports',       label: '🏆 Sports Cards' },
   { id: 'collectibles', label: '🎁 Collectibles' },
   { id: 'coins',        label: '🪙 Coins' },
+  { id: 'comics',       label: '📚 Comics' },
 ];
 
 const SPORTS = [
@@ -39,6 +41,12 @@ const emptySportsForm = () => ({
 
 const emptyCollectiblesForm = () => ({
   upc: '', name: '', series: '', manufacturer: '', year: '', condition: 'New', paid: '', value: '', imageUrl: '',
+});
+
+const emptyComicsForm = () => ({
+  title: '', issueNumber: '', volume: '', writer: '', artist: '', publisher: '', year: '',
+  gradingCompany: '', grade: '', cgcCertNumber: '', isKeyIssue: false,
+  paid: '', value: '', imageUrl: '', storyArc: '',
 });
 
 export default function HomePage() {
@@ -65,6 +73,22 @@ export default function HomePage() {
   const [coinYear, setCoinYear] = useState('');
   const [coinMint, setCoinMint] = useState('');
   const [coinSearch, setCoinSearch] = useState(false);
+
+  // Comics sub-mode: 'series' = browse flow, 'issue' = direct issue search
+  const [comicMode, setComicMode] = useState<'series' | 'issue'>('series');
+  // Comics — Browse Series (phase 1: volume search, phase 2: issue browse)
+  const [comicName, setComicName] = useState('');
+  const [comicSearch, setComicSearch] = useState(false);
+  const [selectedVolume, setSelectedVolume] = useState<CardResult | null>(null);
+  const [comicIssueFilter, setComicIssueFilter] = useState('');
+  // Comics — Find Issue (direct: series name + issue number)
+  const [findIssueName, setFindIssueName] = useState('');
+  const [findIssueNumber, setFindIssueNumber] = useState('');
+  const [findIssueSearch, setFindIssueSearch] = useState(false);
+
+  // Comics manual-add state
+  const [com, setCom] = useState(emptyComicsForm);
+  const [comMsg, setComMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   // Sports manual-add state
   const [sp, setSp] = useState(emptySportsForm);
@@ -94,19 +118,32 @@ export default function HomePage() {
       setSpMsg(null);
     };
 
+  const setCom_ = (field: keyof ReturnType<typeof emptyComicsForm>) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+      const value = e.target.type === 'checkbox' ? (e.target as HTMLInputElement).checked : e.target.value;
+      setCom((prev) => ({ ...prev, [field]: value }));
+      setComMsg(null);
+    };
+
   const setCol_ = (field: keyof ReturnType<typeof emptyCollectiblesForm>) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
       setCol((prev) => ({ ...prev, [field]: e.target.value }));
       setColMsg(null);
     };
 
-  const mtgParams  = { name: mtgName, set_hint: mtgSet, collector_number: mtgNum };
-  const pkmnParams = { name: pkmnName, set_hint: pkmnSet, number: pkmnNum };
-  const coinParams = { name: coinName, year: coinYear, mint_mark: coinMint };
+  const mtgParams        = { name: mtgName, set_hint: mtgSet, collector_number: mtgNum };
+  const pkmnParams       = { name: pkmnName, set_hint: pkmnSet, number: pkmnNum };
+  const coinParams       = { name: coinName, year: coinYear, mint_mark: coinMint };
+  const comicParams          = { name: comicName };
+  const comicIssueParams     = { volume_id: selectedVolume?.set_code ?? '', issue_number: comicIssueFilter || undefined };
+  const comicFindIssueParams = { name: findIssueName, issue_number: findIssueNumber };
 
-  const mtgResult  = useMtgSearch(mtgParams, mtgSearch);
-  const pkmnResult = usePokemonSearch(pkmnParams, pkmnSearch);
-  const coinResult = useCoinSearch(coinParams, coinSearch);
+  const mtgResult            = useMtgSearch(mtgParams, mtgSearch);
+  const pkmnResult           = usePokemonSearch(pkmnParams, pkmnSearch);
+  const coinResult           = useCoinSearch(coinParams, coinSearch);
+  const comicResult          = useComicSearch(comicParams, comicSearch && !selectedVolume);
+  const comicIssueResult     = useComicIssueSearch(comicIssueParams, !!selectedVolume);
+  const comicFindIssueResult = useComicFindIssue(comicFindIssueParams, findIssueSearch);
 
   const handleAddSportsCard = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -204,6 +241,37 @@ export default function HomePage() {
       setCol(emptyCollectiblesForm);
     } catch {
       setColMsg({ ok: false, text: 'Error adding item — try again.' });
+    }
+  };
+
+  const handleAddComic = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!com.title.trim()) { setComMsg({ ok: false, text: 'Title is required.' }); return; }
+    if (!currentOwnerId)   { setComMsg({ ok: false, text: 'Select an owner first.' }); return; }
+    try {
+      await addCard.mutateAsync({
+        owner_id: currentOwnerId, profile_id: currentProfileId,
+        game: 'Comics',
+        name: com.title.trim(),
+        set_name: com.volume.trim(),
+        year: com.year.trim(),
+        issue_number: com.issueNumber.trim() || undefined,
+        story_arc: com.storyArc.trim() || undefined,
+        writer: com.writer.trim() || undefined,
+        comic_artist: com.artist.trim() || undefined,
+        publisher: com.publisher.trim() || undefined,
+        grading_company: com.gradingCompany.trim() || undefined,
+        grade: com.grade.trim() || undefined,
+        cgc_cert_number: com.cgcCertNumber.trim() || undefined,
+        is_key_issue: com.isKeyIssue || undefined,
+        image_url: com.imageUrl || undefined,
+        paid: parseFloat(com.paid) || 0,
+        price_usd: parseFloat(com.value) || undefined,
+      });
+      setComMsg({ ok: true, text: `Added "${com.title}" #${com.issueNumber} to collection!` });
+      setCom(emptyComicsForm);
+    } catch {
+      setComMsg({ ok: false, text: 'Error adding comic — try again.' });
     }
   };
 
@@ -317,6 +385,331 @@ export default function HomePage() {
             imageWidth={imageWidth}
             onRefreshFromApi={() => forceRefreshSearch('coins', coinParams)}
           />
+        </div>
+      )}
+
+      {/* Comics */}
+      {game === 'comics' && (
+        <div>
+          {/* ── Sub-mode tabs ──────────────────────────────────────────────── */}
+          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.25rem' }}>
+            {(['series', 'issue'] as const).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => {
+                  setComicMode(mode);
+                  setSelectedVolume(null);
+                  setComicIssueFilter('');
+                  setFindIssueSearch(false);
+                }}
+                style={{
+                  padding: '5px 14px', borderRadius: 4, border: '1px solid',
+                  borderColor: comicMode === mode ? '#4c6ef5' : '#ccc',
+                  background: comicMode === mode ? '#4c6ef5' : '#f8f8f8',
+                  color: comicMode === mode ? '#fff' : '#555',
+                  fontWeight: comicMode === mode ? 600 : 400,
+                  cursor: 'pointer', fontSize: '0.88rem',
+                }}
+              >
+                {mode === 'series' ? '📖 Browse Series' : '🔍 Find Issue'}
+              </button>
+            ))}
+          </div>
+
+          {/* ── Find Issue mode ────────────────────────────────────────────── */}
+          {comicMode === 'issue' && (
+            <div>
+              <p style={{ margin: '0 0 1rem', color: '#666', fontSize: '0.9rem' }}>
+                Enter a series title and issue number to jump straight to a specific issue.
+              </p>
+              <form
+                onSubmit={(e) => { e.preventDefault(); setFindIssueSearch(true); }}
+                style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: '1.5rem' }}
+              >
+                <input
+                  style={inputStyle}
+                  placeholder="Series title *  (e.g. Action Comics)"
+                  value={findIssueName}
+                  onChange={(e) => { setFindIssueName(e.target.value); setFindIssueSearch(false); }}
+                />
+                <input
+                  style={{ ...inputStyle, flex: 0, width: 110 }}
+                  placeholder="Issue # *"
+                  value={findIssueNumber}
+                  onChange={(e) => { setFindIssueNumber(e.target.value); setFindIssueSearch(false); }}
+                />
+                <button type="submit" style={btnStyle}>Find Issue</button>
+              </form>
+              <SearchResultsGrid
+                cards={comicFindIssueResult.data?.cards ?? []}
+                source={comicFindIssueResult.data?.source}
+                total={comicFindIssueResult.data?.total}
+                loading={comicFindIssueResult.isLoading}
+                cardsPerRow={cardsPerRow}
+                imageWidth={imageWidth}
+              />
+              {comicFindIssueResult.data && comicFindIssueResult.data.cards.length === 0 && !comicFindIssueResult.isLoading && findIssueSearch && (
+                <p style={{ color: '#888', fontSize: '0.9rem' }}>
+                  No issues found for "{findIssueName}" #{findIssueNumber}. Try adjusting the series title.
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* ── Browse Series mode ─────────────────────────────────────────── */}
+          {comicMode === 'series' && (
+          <div>
+          {/* ── Phase 1: Series search (no volume selected) ────────────────── */}
+          {!selectedVolume && (
+            <div>
+              <p style={{ margin: '0 0 1rem', color: '#666', fontSize: '0.9rem' }}>
+                Search for a series by title, then browse its issues.
+                Requires a Comic Vine API key in <code>backend/.env</code>.
+              </p>
+              <form
+                onSubmit={(e) => { e.preventDefault(); setComicSearch(true); }}
+                style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: '1.5rem' }}
+              >
+                <input
+                  style={inputStyle}
+                  placeholder="Series title *  (e.g. Action Comics, Amazing Spider-Man)"
+                  value={comicName}
+                  onChange={(e) => { setComicName(e.target.value); setComicSearch(false); }}
+                />
+                <button type="submit" style={btnStyle}>Search Series</button>
+              </form>
+
+              {/* Volume (series) results list */}
+              {comicResult.isLoading && <p style={{ color: '#888' }}>Searching…</p>}
+              {comicResult.data && comicResult.data.cards.length === 0 && (
+                <p style={{ color: '#888', fontSize: '0.9rem' }}>
+                  No series found. Check your API key or try a different title.
+                </p>
+              )}
+              {(comicResult.data?.cards ?? []).length > 0 && (
+                <div>
+                  <p style={{ margin: '0 0 0.75rem', color: '#888', fontSize: '0.82rem' }}>
+                    {comicResult.data!.cards.length} series found — click one to browse its issues
+                  </p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                    {comicResult.data!.cards.map((vol, i) => (
+                      <div
+                        key={vol.set_code || i}
+                        style={{
+                          display: 'flex', gap: 12, alignItems: 'center',
+                          padding: '10px 8px', borderBottom: '1px solid #eee',
+                          borderRadius: 4, cursor: 'default',
+                        }}
+                      >
+                        {vol.image_url && (
+                          <img
+                            src={vol.image_url}
+                            alt=""
+                            style={{ width: 44, height: 62, objectFit: 'cover', borderRadius: 2, flexShrink: 0 }}
+                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                          />
+                        )}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <strong style={{ fontSize: '0.95rem' }}>{vol.name}</strong>
+                          {vol.set_name && (
+                            <span style={{ color: '#666', marginLeft: 8, fontSize: '0.88rem' }}>{vol.set_name}</span>
+                          )}
+                          {vol.year && (
+                            <span style={{ color: '#999', marginLeft: 6, fontSize: '0.85rem' }}>({vol.year})</span>
+                          )}
+                          {vol.card_number && (
+                            <span style={{ color: '#aaa', marginLeft: 8, fontSize: '0.8rem' }}>
+                              {vol.card_number} issues
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => {
+                            setSelectedVolume(vol);
+                            setComicIssueFilter('');
+                          }}
+                          style={{ ...btnStyle, whiteSpace: 'nowrap', flexShrink: 0 }}
+                        >
+                          Browse Issues →
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Phase 2: Issues for selected volume ────────────────────────── */}
+          {selectedVolume && (
+            <div>
+              {/* Selected series header */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: '1rem', flexWrap: 'wrap' }}>
+                <button
+                  onClick={() => { setSelectedVolume(null); setComicIssueFilter(''); }}
+                  style={{ padding: '5px 12px', borderRadius: 4, border: '1px solid #ccc', background: '#f8f8f8', cursor: 'pointer', fontSize: '0.85rem' }}
+                >
+                  ← Back to series
+                </button>
+                {selectedVolume.image_url && (
+                  <img
+                    src={selectedVolume.image_url}
+                    alt=""
+                    style={{ width: 36, height: 50, objectFit: 'cover', borderRadius: 2 }}
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                  />
+                )}
+                <div>
+                  <strong style={{ fontSize: '1.05rem' }}>{selectedVolume.name}</strong>
+                  {selectedVolume.set_name && <span style={{ color: '#666', marginLeft: 8 }}>{selectedVolume.set_name}</span>}
+                  {selectedVolume.year && <span style={{ color: '#999', marginLeft: 6 }}>({selectedVolume.year})</span>}
+                  {selectedVolume.card_number && (
+                    <span style={{ color: '#aaa', marginLeft: 8, fontSize: '0.85rem' }}>
+                      {selectedVolume.card_number} issues
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Issue number filter */}
+              <div style={{ display: 'flex', gap: 8, marginBottom: '1.5rem', alignItems: 'center' }}>
+                <input
+                  style={{ ...inputStyle, flex: 0, width: 120 }}
+                  placeholder="Filter by issue #"
+                  value={comicIssueFilter}
+                  onChange={(e) => setComicIssueFilter(e.target.value)}
+                  title="Enter an issue number to jump to a specific issue"
+                />
+                {comicIssueFilter && (
+                  <button
+                    onClick={() => setComicIssueFilter('')}
+                    style={{ padding: '6px 10px', borderRadius: 4, border: '1px solid #ccc', background: '#f8f8f8', cursor: 'pointer', fontSize: '0.85rem' }}
+                  >
+                    Clear
+                  </button>
+                )}
+                {comicIssueResult.isLoading && <span style={{ color: '#888', fontSize: '0.85rem' }}>Loading issues…</span>}
+              </div>
+
+              {/* Issues grid */}
+              <SearchResultsGrid
+                cards={comicIssueResult.data?.cards ?? []}
+                source={comicIssueResult.data?.source}
+                total={comicIssueResult.data?.total}
+                loading={comicIssueResult.isLoading}
+                cardsPerRow={cardsPerRow}
+                imageWidth={imageWidth}
+              />
+              {comicIssueResult.data && comicIssueResult.data.cards.length === 0 && !comicIssueResult.isLoading && (
+                <p style={{ color: '#888', fontSize: '0.9rem' }}>
+                  No issues found{comicIssueFilter ? ` for issue #${comicIssueFilter}` : ''}.
+                </p>
+              )}
+            </div>
+          )}
+          </div>
+          )}
+
+          {/* ── Manual add form ─────────────────────────────────────────────── */}
+          <div style={{ borderTop: '2px solid #e0e4ef', margin: '2rem 0 1.5rem' }} />
+          <h3 style={{ margin: '0 0 1rem', fontSize: '1rem', color: '#333' }}>Add Comic Manually</h3>
+          <form onSubmit={handleAddComic} style={{ maxWidth: 720, display: 'flex', flexDirection: 'column', gap: 12 }}>
+
+            {/* Title | Issue # */}
+            <div style={{ display: 'flex', gap: 16 }}>
+              <label style={labelStyle}>
+                Title / Series *
+                <input style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={com.title} onChange={setCom_('title')} placeholder="e.g. Amazing Spider-Man" />
+              </label>
+              <label style={{ ...labelStyle, flex: '0 0 90px' }}>
+                Issue #
+                <input style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={com.issueNumber} onChange={setCom_('issueNumber')} placeholder="e.g. 300" />
+              </label>
+            </div>
+
+            {/* Volume | Year | Publisher */}
+            <div style={{ display: 'flex', gap: 16 }}>
+              <label style={labelStyle}>
+                Volume / Series
+                <input style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={com.volume} onChange={setCom_('volume')} placeholder="e.g. Vol. 1" />
+              </label>
+              <label style={{ ...labelStyle, flex: '0 0 100px' }}>
+                Year
+                <input style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={com.year} onChange={setCom_('year')} placeholder="e.g. 1988" />
+              </label>
+              <label style={labelStyle}>
+                Publisher
+                <input style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={com.publisher} onChange={setCom_('publisher')} placeholder="e.g. Marvel" />
+              </label>
+            </div>
+
+            {/* Story Arc */}
+            <label style={labelStyle}>
+              Story Arc / Issue Title
+              <input style={{ ...inputStyle, flex: 'unset' }} value={com.storyArc} onChange={setCom_('storyArc')} placeholder="e.g. Kraven's Last Hunt" />
+            </label>
+
+            {/* Writer | Artist */}
+            <div style={{ display: 'flex', gap: 16 }}>
+              <label style={labelStyle}>
+                Writer
+                <input style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={com.writer} onChange={setCom_('writer')} placeholder="e.g. Stan Lee" />
+              </label>
+              <label style={labelStyle}>
+                Artist / Penciler
+                <input style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={com.artist} onChange={setCom_('artist')} placeholder="e.g. Steve Ditko" />
+              </label>
+            </div>
+
+            {/* Grading Company | Grade | CGC Cert | Key Issue */}
+            <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end' }}>
+              <label style={labelStyle}>
+                Grading Company
+                <input style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={com.gradingCompany} onChange={setCom_('gradingCompany')} placeholder="e.g. CGC, CBCS" />
+              </label>
+              <label style={{ ...labelStyle, flex: '0 0 100px' }}>
+                Grade
+                <input style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={com.grade} onChange={setCom_('grade')} placeholder="e.g. 9.8" />
+              </label>
+              <label style={{ ...labelStyle, flex: '0 0 160px' }}>
+                CGC/CBCS Cert #
+                <input style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={com.cgcCertNumber} onChange={setCom_('cgcCertNumber')} placeholder="e.g. 4003298001" />
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8, fontSize: '0.9rem', color: '#555', paddingBottom: 7, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                <input type="checkbox" checked={com.isKeyIssue} onChange={setCom_('isKeyIssue')} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+                Key Issue
+              </label>
+            </div>
+
+            {/* Price Paid | Value */}
+            <div style={{ display: 'flex', gap: 16 }}>
+              <label style={{ ...labelStyle, flex: '0 0 140px' }}>
+                Price Paid ($)
+                <input type="number" min={0} step={0.01} style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={com.paid} onChange={setCom_('paid')} placeholder="0.00" />
+              </label>
+              <label style={{ ...labelStyle, flex: '0 0 140px' }}>
+                Value ($)
+                <input type="number" min={0} step={0.01} style={{ ...inputStyle, flex: 'unset', width: '100%' }} value={com.value} onChange={setCom_('value')} placeholder="0.00" />
+              </label>
+            </div>
+
+            {/* Image picker */}
+            <div>
+              <span style={{ fontSize: '0.8rem', color: '#555', display: 'block', marginBottom: 6 }}>Cover Image</span>
+              <ImagePicker
+                query={[com.title, com.issueNumber, com.publisher, 'comic cover'].filter(Boolean).join(' ')}
+                selectedUrl={com.imageUrl}
+                onSelect={(url) => setCom((prev) => ({ ...prev, imageUrl: url }))}
+              />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <button type="submit" style={btnStyle} disabled={addCard.isPending}>
+                {addCard.isPending ? 'Adding…' : '+ Add to Collection'}
+              </button>
+              {comMsg && <span style={{ fontSize: '0.85rem', color: comMsg.ok ? '#2a7a2a' : '#c00' }}>{comMsg.text}</span>}
+            </div>
+          </form>
         </div>
       )}
 

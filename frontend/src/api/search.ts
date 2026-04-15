@@ -32,6 +32,21 @@ export interface CoinSearchParams {
   force_refresh?: boolean;
 }
 
+export interface ComicSearchParams {
+  name: string;
+  force_refresh?: boolean;
+}
+
+export interface ComicIssueSearchParams {
+  volume_id: string;
+  issue_number?: string;
+}
+
+export interface ComicFindIssueParams {
+  name: string;
+  issue_number: string;
+}
+
 export const searchApi = {
   mtg: (params: MtgSearchParams) =>
     client.get<SearchResponse>('/api/search/mtg', { params }).then((r) => r.data),
@@ -44,6 +59,15 @@ export const searchApi = {
 
   coins: (params: CoinSearchParams) =>
     client.get<SearchResponse>('/api/search/coins', { params }).then((r) => r.data),
+
+  comics: (params: ComicSearchParams) =>
+    client.get<SearchResponse>('/api/search/comics', { params }).then((r) => r.data),
+
+  comicIssues: (params: ComicIssueSearchParams) =>
+    client.get<SearchResponse>('/api/search/comics/issues', { params }).then((r) => r.data),
+
+  comicFindIssue: (params: ComicFindIssueParams) =>
+    client.get<SearchResponse>('/api/search/comics/find-issue', { params }).then((r) => r.data),
 
   /** @deprecated use sports() */
   baseball: (params: SportsSearchParams) =>

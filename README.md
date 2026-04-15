@@ -160,7 +160,7 @@ See [`docs/PROJECT_STRUCTURE.md`](docs/PROJECT_STRUCTURE.md) for a full breakdow
 The backend exposes a REST API at `http://localhost:8000/api/`. Interactive docs are available at:
 
 - **Swagger UI:** http://localhost:8000/docs
-- **ReDoc:** http://localhost:8000/redoc
+- **ReDoc:** http://localhost:8000/redçoc
 
 Key endpoint groups:
 
