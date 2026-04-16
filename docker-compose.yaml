@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: collectibles-backend
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=sqlite:///./data/collectibles.db
+      - CORS_ORIGINS_RAW=http://localhost:80,http://localhost,http://127.0.0.1
+      - HOST=0.0.0.0
+      - PORT=8000
+      # API Keys (set these in Portainer environment variables or .env file)
+      - POKEMONTCG_API_KEY=${POKEMONTCG_API_KEY:-}
+      - EBAY_APP_ID=${EBAY_APP_ID:-}
+      - EBAY_APP_ID_SBX=${EBAY_APP_ID_SBX:-}
+      - JUSTTCG_API_KEY=${JUSTTCG_API_KEY:-}
+      - UPCITEMDB_API_KEY=${UPCITEMDB_API_KEY:-}
+      - SERPAPI_KEY=${SERPAPI_KEY:-}
+      - COMIC_VINE_API_KEY=${COMIC_VINE_API_KEY:-}
+    volumes:
+      - ./data:/app/data
+      - ./collections:/app/collections
+      - ./backend/fallback_data:/app/backend/fallback_data
+      - ./logs:/app/logs
+    networks:
+      - collectibles-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: collectibles-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    environment:
+      - VITE_API_URL=http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - collectibles-network
+
+networks:
+  collectibles-network:
+    driver: bridge
+
+volumes:
+  data:
+    driver: local
