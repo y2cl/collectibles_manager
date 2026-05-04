@@ -60,6 +60,18 @@ class CardResult(BaseModel):
     source: str = ""
     artist: str = ""
 
+    # Rich MTG data fields for Cube Maker sync
+    scryfall_id: Optional[str] = None
+    mana_cost: Optional[str] = None
+    type_line: Optional[str] = None
+    oracle_text: Optional[str] = None
+    keywords: Optional[str] = None
+    power: Optional[str] = None
+    toughness: Optional[str] = None
+    rarity: Optional[str] = None
+    color_identity: Optional[str] = None
+    finish: Optional[str] = None
+
     class Config:
         populate_by_name = True
 
@@ -120,6 +132,24 @@ class CollectionCardBase(BaseModel):
     signed: str = ""
     altered: str = ""
     notes: str = ""
+    is_proxy: Optional[bool] = False
+    # Rich MTG data fields for Cube Maker sync
+    scryfall_id: Optional[str] = None
+    mana_cost: Optional[str] = None
+    type_line: Optional[str] = None
+    oracle_text: Optional[str] = None
+    keywords: Optional[str] = None
+    power: Optional[str] = None
+    toughness: Optional[str] = None
+    rarity: Optional[str] = None
+    color_identity: Optional[str] = None
+    finish: Optional[str] = None
+    tcg_link: Optional[str] = None
+    frame_effects: Optional[str] = None
+    full_art: Optional[bool] = False
+    promo_types: Optional[str] = None
+    scryfall_data: Optional[str] = None  # Full Scryfall JSON
+    legalities: Optional[str] = None  # JSON string of format legalities
 
 
 class CollectionCardCreate(CollectionCardBase):
@@ -133,6 +163,18 @@ class CollectionCardUpdate(BaseModel):
     card_number: Optional[str] = None
     set_name: Optional[str] = None
     year: Optional[str] = None
+    # Rich MTG data fields for updates
+    scryfall_id: Optional[str] = None
+    mana_cost: Optional[str] = None
+    type_line: Optional[str] = None
+    oracle_text: Optional[str] = None
+    keywords: Optional[str] = None
+    power: Optional[str] = None
+    toughness: Optional[str] = None
+    rarity: Optional[str] = None
+    color_identity: Optional[str] = None
+    finish: Optional[str] = None
+    tcg_link: Optional[str] = None
     sport: Optional[str] = None
     manufacturer: Optional[str] = None
     upc: Optional[str] = None
@@ -169,6 +211,7 @@ class CollectionCardUpdate(BaseModel):
     publisher: Optional[str] = None
     is_key_issue: Optional[bool] = None
     cgc_cert_number: Optional[str] = None
+    is_proxy: Optional[bool] = None
 
 
 class CollectionCardRead(CollectionCardBase):
@@ -207,6 +250,53 @@ class CollectionStats(BaseModel):
 class CollectionResponse(BaseModel):
     cards: list[CollectionCardRead]
     stats: CollectionStats
+
+
+class MtgCardSummary(BaseModel):
+    id: int
+    name: str
+    set_name: str
+    set_code: str
+    card_number: str
+    variant: str
+    quantity: int
+    image_url: Optional[str] = None
+    price_usd: Optional[float] = None
+    price_usd_foil: Optional[float] = None
+    price_usd_etched: Optional[float] = None
+    link: Optional[str] = None
+    # Rich MTG data fields for Cube Maker sync
+    scryfall_id: Optional[str] = None
+    mana_cost: Optional[str] = None
+    type_line: Optional[str] = None
+    oracle_text: Optional[str] = None
+    keywords: Optional[str] = None
+    power: Optional[str] = None
+    toughness: Optional[str] = None
+    rarity: Optional[str] = None
+    color_identity: Optional[str] = None
+    attributes: Optional[str] = None
+    is_commander: Optional[str] = None
+    is_commander_stable: Optional[str] = None
+    archetypes: Optional[str] = None
+    tokens_created: Optional[str] = None
+    tcg_link: Optional[str] = None
+    finish: Optional[str] = None
+    is_proxy: Optional[bool] = None
+    frame_effects: Optional[str] = None
+    full_art: Optional[bool] = None
+    promo_types: Optional[str] = None
+    scryfall_data: Optional[str] = None
+    legalities: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class MtgCollectionResponse(BaseModel):
+    cards: list[MtgCardSummary]
+    total_cards: int
+    unique_cards: int
 
 
 # ── Watchlist ─────────────────────────────────────────────────────────────────

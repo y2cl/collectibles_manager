@@ -7,10 +7,16 @@ from pathlib import Path
 from typing import List
 from pydantic import computed_field
 from pydantic_settings import BaseSettings
+import os
 
 # Always resolve .env relative to this file (backend/.env),
 # regardless of which directory uvicorn is launched from.
 _ENV_FILE = Path(__file__).parent / ".env"
+
+# Debug: Print environment loading info (flush=True for immediate output)
+print(f"[Config] Loading settings from: {_ENV_FILE}", flush=True)
+print(f"[Config] .env file exists: {_ENV_FILE.exists()}", flush=True)
+print(f"[Config] Current working directory: {os.getcwd()}", flush=True)
 
 
 class Settings(BaseSettings):
@@ -50,3 +56,14 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Debug: Print loaded settings
+print(f"[Config] Database URL: {settings.database_url}", flush=True)
+print(f"[Config] CORS origins: {settings.cors_origins}", flush=True)
+print(f"[Config] PokemonTCG API key set: {bool(settings.pokemontcg_api_key)}", flush=True)
+
+# Check if database file exists (extract path from sqlite URL)
+_db_path = settings.database_url.replace("sqlite:///", "")
+_db_full_path = Path(_db_path).resolve()
+print(f"[Config] Database file path: {_db_full_path}", flush=True)
+print(f"[Config] Database file exists: {_db_full_path.exists()}", flush=True)

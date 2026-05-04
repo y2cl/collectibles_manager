@@ -13,6 +13,7 @@ from ..schemas.card import (
     CollectionCardCreate, CollectionCardRead, CollectionCardUpdate,
     BulkDeleteRequest, BulkMoveRequest, BulkRefreshRequest,
     CollectionResponse, CollectionStats,
+    MtgCardSummary, MtgCollectionResponse,
 )
 from ..services.collection_service import add_card
 
@@ -107,6 +108,34 @@ def get_collection(
     )
 
 
+@router.get("/mtg", response_model=MtgCollectionResponse)
+def get_mtg_collection(
+    owner_id: str = Query(...),
+    profile_id: str = Query("default"),
+    set_code: Optional[str] = Query(None, description="Filter by Scryfall set code"),
+    name: Optional[str] = Query(None, description="Filter by partial card name (case-insensitive)"),
+    db: Session = Depends(get_db),
+):
+    """Return MTG cards from the collection, scoped for cube/deck building."""
+    owner = _require_owner(db, owner_id)
+    q = db.query(CollectionCard).filter(
+        CollectionCard.owner_id == owner.id,
+        CollectionCard.profile_id == profile_id,
+        CollectionCard.game == "Magic: The Gathering",
+    )
+    if set_code:
+        q = q.filter(CollectionCard.set_code == set_code.lower())
+    if name:
+        q = q.filter(CollectionCard.name.ilike(f"%{name}%"))
+    cards = q.order_by(CollectionCard.name).all()
+
+    return MtgCollectionResponse(
+        cards=cards,
+        total_cards=sum(c.quantity or 1 for c in cards),
+        unique_cards=len(cards),
+    )
+
+
 @router.post("/cards", response_model=CollectionCardRead, status_code=201)
 def add_card_endpoint(payload: CollectionCardCreate, db: Session = Depends(get_db)):
     settings = _get_settings(db)
@@ -193,7 +222,7 @@ def bulk_refresh_cards(payload: BulkRefreshRequest, db: Session = Depends(get_db
             return None
 
     def _refresh_mtg(card: CollectionCard) -> str:
-        """Fetch current prices from Scryfall for the card's stored variant."""
+        """Fetch current prices and rich MTG data from Scryfall for the card's stored variant."""
         # Prefer exact set+collector lookup; fall back to fuzzy name search.
         if card.set_code and card.card_number:
             url = f"https://api.scryfall.com/cards/{card.set_code.lower()}/{card.card_number}"
@@ -214,7 +243,8 @@ def bulk_refresh_cards(payload: BulkRefreshRequest, db: Session = Depends(get_db
         if not resp.ok:
             return f"Scryfall {resp.status_code}: {resp.text[:120]}"
 
-        prices = resp.json().get("prices") or {}
+        data = resp.json()
+        prices = data.get("prices") or {}
         usd        = _to_f(prices.get("usd"))
         usd_foil   = _to_f(prices.get("usd_foil"))
         usd_etched = _to_f(prices.get("usd_etched"))
@@ -233,6 +263,18 @@ def bulk_refresh_cards(payload: BulkRefreshRequest, db: Session = Depends(get_db
             card.price_usd = usd_etched
         elif usd:
             card.price_usd = usd
+
+        # Update rich MTG data fields
+        card.scryfall_id = data.get("id") or card.scryfall_id
+        card.mana_cost = data.get("mana_cost") or card.mana_cost
+        card.type_line = data.get("type_line") or card.type_line
+        card.oracle_text = data.get("oracle_text") or card.oracle_text
+        card.keywords = ";".join(data.get("keywords", [])) if data.get("keywords") else card.keywords
+        card.power = data.get("power") or card.power
+        card.toughness = data.get("toughness") or card.toughness
+        card.rarity = data.get("rarity") or card.rarity
+        card.color_identity = "".join(data.get("color_identity", [])) if data.get("color_identity") else card.color_identity
+        card.finish = variant if variant in ["foil", "etched", "nonfoil"] else card.finish
 
         return ""
 

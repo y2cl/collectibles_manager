@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import CardImage from '../shared/CardImage';
 import AddToCollectionButton from '../shared/AddToCollectionButton';
+import CardDetailModal from '../shared/CardDetailModal';
 import type { CardResult } from '../../types/card';
 
 interface Props {
@@ -97,6 +98,9 @@ export default function CardResultCard({ card, imageWidth = 160 }: Props) {
     coinTypeOptions.find(t => t === 'MS') ?? coinTypeOptions[0] ?? ''
   );
 
+  const [showBack, setShowBack] = useState(false);
+  const [isDetailOpen, setIsDetailOpen] = useState(false);
+
   // For coins: use data from the selected type (MS / MS PL / MS DPL)
   const coinTypeData = isCoin && selectedCoinType
     ? card.coin_types_data?.[selectedCoinType]
@@ -128,7 +132,6 @@ export default function CardResultCard({ card, imageWidth = 160 }: Props) {
 
   // Default to the first available variant
   const [selectedVariant, setSelectedVariant] = useState<string>(variants[0] ?? '');
-  const [showBack, setShowBack] = useState(false);
 
   // Reset grade selection when coin type changes
   useEffect(() => {
@@ -162,24 +165,36 @@ export default function CardResultCard({ card, imageWidth = 160 }: Props) {
     ...PKMN_VARIANT_LABELS,
   };
 
+  // Calculate container width to match image + minimal padding
+  const containerWidth = imageWidth + 16; // image width + padding on both sides
+
+  // Set icon URL for MTG cards
+  const setIconUrl = isMtg && card.set_code
+    ? `https://svgs.scryfall.io/sets/${card.set_code.toLowerCase()}.svg`
+    : null;
+
   return (
     <div style={{
       border: '1px solid #dde',
       borderRadius: 8,
-      padding: '0.75rem',
+      padding: '0.5rem',
       background: '#fff',
       display: 'flex',
       flexDirection: 'column',
-      gap: 8,
+      gap: 6,
+      width: containerWidth,
+      maxWidth: containerWidth,
+      boxSizing: 'border-box',
     }}>
       {/* Card image with optional flip button */}
       <div style={{ position: 'relative', display: 'inline-block' }}>
-        <CardImage
-          src={showBack ? (effectiveImageUrlBack ?? '') : effectiveImageUrl}
-          alt={showBack ? `${card.name} (back)` : card.name}
-          width={imageWidth}
-          link={card.link}
-        />
+        <div onClick={() => setIsDetailOpen(true)} style={{ cursor: 'pointer' }}>
+          <CardImage
+            src={showBack ? (effectiveImageUrlBack ?? '') : effectiveImageUrl}
+            alt={showBack ? `${card.name} (back)` : card.name}
+            width={imageWidth}
+          />
+        </div>
         {isDfc && (
           <button
             onClick={() => setShowBack((b) => !b)}
@@ -232,11 +247,21 @@ export default function CardResultCard({ card, imageWidth = 160 }: Props) {
       ) : (
         /* ── Card / other game info block ── */
         <div>
-          <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{card.name}</div>
-          <div style={{ fontSize: '0.75rem', color: '#666' }}>
-            {card.set_code ? `[${card.set_code.toUpperCase()}] ` : ''}{card.set_name}
-            {card.card_number ? ` · #${card.card_number}` : ''}
-            {card.year ? ` · ${card.year}` : ''}
+          <div style={{ fontWeight: 600, fontSize: '0.9rem', lineHeight: 1.2 }}>{card.name}</div>
+          <div style={{ fontSize: '0.75rem', color: '#666', display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
+            {setIconUrl && (
+              <img
+                src={setIconUrl}
+                alt={card.set_code}
+                style={{ width: 16, height: 16, objectFit: 'contain' }}
+                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+              />
+            )}
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {card.set_code ? `[${card.set_code.toUpperCase()}] ` : ''}{card.set_name}
+              {card.card_number ? ` · #${card.card_number}` : ''}
+              {card.year ? ` · ${card.year}` : ''}
+            </span>
           </div>
           {card.artist && (
             <div style={{ fontSize: '0.7rem', color: '#999' }}>Art: {card.artist}</div>
@@ -303,6 +328,12 @@ export default function CardResultCard({ card, imageWidth = 160 }: Props) {
         selectedVariant={selectedVariant}
         onVariantChange={setSelectedVariant}
         selectedCoinType={isCoin ? selectedCoinType : undefined}
+      />
+
+      <CardDetailModal
+        card={card}
+        isOpen={isDetailOpen}
+        onClose={() => setIsDetailOpen(false)}
       />
     </div>
   );

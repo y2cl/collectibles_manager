@@ -1,7 +1,7 @@
 """
 App settings endpoints.
 """
-from typing import List
+from typing import List, Dict, Any
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -9,6 +9,7 @@ from ..database import get_db
 from ..models.settings import AppSettings
 from ..schemas.settings import AppSettingsRead, AppSettingsUpdate, ApiSourceUpdate, ApiSourceConfig
 from ..legacy.constants import API_SOURCES
+from ..config import settings as env_settings
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -95,3 +96,18 @@ def update_api_sources(updates: List[ApiSourceUpdate], db: Session = Depends(get
             description=meta.get("description", ""),
         ))
     return sources
+
+
+@router.get("/env-config")
+def get_env_config() -> Dict[str, Any]:
+    """Return environment-based configuration status (API keys, etc.)"""
+    return {
+        "pokemontcg_api_key_configured": bool(env_settings.pokemontcg_api_key),
+        "ebay_app_id_configured": bool(env_settings.ebay_app_id),
+        "ebay_app_id_sbx_configured": bool(env_settings.ebay_app_id_sbx),
+        "justtcg_api_key_configured": bool(env_settings.justtcg_api_key),
+        "serpapi_key_configured": bool(env_settings.serpapi_key),
+        "comic_vine_api_key_configured": bool(env_settings.comic_vine_api_key),
+        "database_url": env_settings.database_url,
+        "cors_origins": env_settings.cors_origins,
+    }

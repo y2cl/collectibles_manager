@@ -58,6 +58,17 @@ export interface CardResult {
   publisher?: string;
   is_key_issue?: boolean;
   cgc_cert_number?: string;
+  // Rich MTG data fields
+  scryfall_id?: string;
+  mana_cost?: string;
+  type_line?: string;
+  oracle_text?: string;
+  keywords?: string;
+  power?: string;
+  toughness?: string;
+  rarity?: string;
+  color_identity?: string;
+  finish?: string;
 }
 
 export interface SearchResponse {
@@ -112,7 +123,19 @@ export interface CollectionCard {
   signed: string;
   altered: string;
   notes: string;
+  is_proxy?: boolean;
   timestamp: string;
+  // Rich MTG data fields
+  scryfall_id?: string;
+  mana_cost?: string;
+  type_line?: string;
+  oracle_text?: string;
+  keywords?: string;
+  power?: string;
+  toughness?: string;
+  rarity?: string;
+  color_identity?: string;
+  finish?: string;
 }
 
 export interface CollectionStats {
@@ -200,4 +223,15 @@ export interface CardAddRequest {
   publisher?: string;
   is_key_issue?: boolean;
   cgc_cert_number?: string;
+  // Rich MTG data fields
+  scryfall_id?: string;
+  mana_cost?: string;
+  type_line?: string;
+  oracle_text?: string;
+  keywords?: string;
+  power?: string;
+  toughness?: string;
+  rarity?: string;
+  color_identity?: string;
+  finish?: string;
 }

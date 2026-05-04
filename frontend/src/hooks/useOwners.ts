@@ -4,7 +4,11 @@ import { ownersApi } from '../api/owners';
 export function useOwners() {
   return useQuery({
     queryKey: ['owners'],
-    queryFn: () => ownersApi.list(),
+    queryFn: async () => {
+      const data = await ownersApi.list();
+      console.log('[useOwners] Loaded owners:', data);
+      return data;
+    },
     staleTime: 30 * 1000,
   });
 }

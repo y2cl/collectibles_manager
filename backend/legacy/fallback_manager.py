@@ -96,19 +96,19 @@ def append_to_csv(csv_path: str, data: Dict[str, Any], fieldnames: List[str]):
         # Get absolute path for debugging
         abs_path = os.path.abspath(csv_path)
         logger.debug(f"Appending to CSV at absolute path: {abs_path}")
-        
+
         file_exists = os.path.exists(csv_path)
         logger.debug(f"CSV file exists before write: {file_exists}")
-        
+
         with open(csv_path, 'a', newline='', encoding='utf-8') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, 
-                                  quoting=csv.QUOTE_ALL, 
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames,
+                                  quoting=csv.QUOTE_ALL,
                                   escapechar='\\',
                                   doublequote=True)
             if not file_exists:
                 writer.writeheader()
             writer.writerow(data)
-        
+
         # Verify file was written
         logger.debug(f"CSV file exists after write: {os.path.exists(csv_path)}")
         if os.path.exists(csv_path):
@@ -117,6 +117,49 @@ def append_to_csv(csv_path: str, data: Dict[str, Any], fieldnames: List[str]):
     except Exception as e:
         logger.error(f"Failed to append to {csv_path}: {e}")
         raise
+
+
+def update_csv_row(csv_path: str, data: Dict[str, Any], fieldnames: List[str], id_field: str = "id"):
+    """Update an existing row in CSV file by ID, or append if not exists."""
+    try:
+        if not os.path.exists(csv_path):
+            # File doesn't exist, just append
+            append_to_csv(csv_path, data, fieldnames)
+            return True
+
+        # Read all rows
+        rows = []
+        updated = False
+        target_id = str(data.get(id_field, ""))
+
+        with open(csv_path, 'r', newline='', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                if row and str(row.get(id_field, "")) == target_id:
+                    # Replace with new data
+                    rows.append(data)
+                    updated = True
+                else:
+                    rows.append(row)
+
+        if not updated:
+            # ID not found, append instead
+            append_to_csv(csv_path, data, fieldnames)
+            return True
+
+        # Write back all rows
+        with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames,
+                                  quoting=csv.QUOTE_ALL,
+                                  escapechar='\\',
+                                  doublequote=True)
+            writer.writeheader()
+            writer.writerows(rows)
+
+        return True
+    except Exception as e:
+        logger.error(f"Failed to update row in {csv_path}: {e}")
+        return False
 
 def _get_existing_ids(csv_path: str, id_field: str) -> set:
     """Read a CSV and return a set of values for the given id_field. Empty set if file missing."""
@@ -281,15 +324,15 @@ def store_mtg_card(card_data: Dict[str, Any]) -> bool:
         # De-dup by id
         existing = _get_existing_ids(MTG_CARDS_CSV, "id")
         card_id_val = str(card_data.get("id", ""))
-        fieldnames = ["id", "name", "set_name", "set_code", "collector_number", "type_line", 
-                     "mana_cost", "cmc", "rarity", "oracle_text", "colors", "color_identity", 
-                     "legalities", "prices_usd", "prices_usd_foil", "prices_usd_etched", 
-                     "image_uris_small", "image_uris_normal", "image_uris_large", "artist", 
-                     "illustration_id", "layout", "full_art", "textless", "booster", 
-                     "story_spotlight", "preview", "printed_name", "power", "toughness", 
-                     "flavor_text", "card_back_id", "artist_ids", "watermark", "frame", 
-                     "frame_effects", "security_stamp", "finishes", "oversized", "promo", 
-                     "reprint", "variation", "language", "set_uri", "scryfall_uri", 
+        fieldnames = ["id", "name", "set_name", "set_code", "collector_number", "type_line",
+                     "mana_cost", "cmc", "rarity", "oracle_text", "keywords", "colors", "color_identity",
+                     "legalities", "prices_usd", "prices_usd_foil", "prices_usd_etched",
+                     "image_uris_small", "image_uris_normal", "image_uris_large", "artist",
+                     "illustration_id", "layout", "full_art", "textless", "booster",
+                     "story_spotlight", "preview", "printed_name", "power", "toughness",
+                     "flavor_text", "card_back_id", "artist_ids", "watermark", "frame",
+                     "frame_effects", "security_stamp", "finishes", "oversized", "promo",
+                     "promo_types", "reprint", "variation", "language", "set_uri", "scryfall_uri",
                      "object", "created_at", "updated_at", "released_at"]
         
         # Flatten nested objects for CSV storage
@@ -304,6 +347,7 @@ def store_mtg_card(card_data: Dict[str, Any]) -> bool:
             "cmc": card_data.get("cmc", 0),
             "rarity": card_data.get("rarity", ""),
             "oracle_text": card_data.get("oracle_text", ""),
+            "keywords": "; ".join(card_data.get("keywords", [])) if isinstance(card_data.get("keywords"), list) else (card_data.get("keywords") or ""),
             "colors": json.dumps(card_data.get("colors", [])),
             "color_identity": json.dumps(card_data.get("color_identity", [])),
             "legalities": json.dumps(card_data.get("legalities", {})),
@@ -345,6 +389,7 @@ def store_mtg_card(card_data: Dict[str, Any]) -> bool:
             "finishes": json.dumps(card_data.get("finishes", [])),
             "oversized": card_data.get("oversized", False),
             "promo": card_data.get("promo", False),
+            "promo_types": json.dumps(card_data.get("promo_types", [])),
             "reprint": card_data.get("reprint", False),
             "variation": card_data.get("variation", False),
             "language": card_data.get("lang", "en"),
@@ -355,10 +400,11 @@ def store_mtg_card(card_data: Dict[str, Any]) -> bool:
             "updated_at": card_data.get("updated_at", ""),
             "released_at": card_data.get("released_at", "")
         }
-        
-        if card_id_val and card_id_val not in existing:
-            append_to_csv(MTG_CARDS_CSV, flat_data, fieldnames)
-        
+
+        # Always update (or add) the card - this ensures "Update from API" refreshes cache
+        if card_id_val:
+            update_csv_row(MTG_CARDS_CSV, flat_data, fieldnames, id_field="id")
+
         # Download card images if available
         image_uris = card_data.get("image_uris", {})
         card_id = card_data.get("id", "unknown")
@@ -576,6 +622,32 @@ def find_mtg_cards_local(name: str, set_hint: str = "", collector_number: str = 
                     rls = row.get('released_at') or ''
                     if rls:
                         year = rls[:4]
+                    # Parse color identity from JSON array
+                    color_identity = ""
+                    try:
+                        ci_list = json.loads(row.get('color_identity') or '[]')
+                        if isinstance(ci_list, list):
+                            color_identity = ''.join(ci_list)
+                    except Exception:
+                        color_identity = row.get('color_identity') or ""
+                    
+                    # Parse frame_effects and promo_types from JSON
+                    frame_effects = ""
+                    try:
+                        fe_list = json.loads(row.get('frame_effects') or '[]')
+                        if isinstance(fe_list, list):
+                            frame_effects = '; '.join(fe_list)
+                    except Exception:
+                        frame_effects = row.get('frame_effects') or ""
+                    
+                    promo_types = ""
+                    try:
+                        pt_list = json.loads(row.get('promo_types') or '[]')
+                        if isinstance(pt_list, list):
+                            promo_types = '; '.join(pt_list)
+                    except Exception:
+                        promo_types = row.get('promo_types') or ""
+
                     card = {
                         'game': 'Magic: The Gathering',
                         'name': row.get('name') or '',
@@ -594,11 +666,27 @@ def find_mtg_cards_local(name: str, set_hint: str = "", collector_number: str = 
                         'image_url_back': img_back,
                         'link': row.get('scryfall_uri') or '',
                         'quantity': 1,
-                        'variant': '',
+                        'variant': 'etched' if row.get('prices_usd_etched') else ('foil' if row.get('prices_usd_foil') else 'nonfoil'),
                         'source': 'Local Fallback',
                         'updated_at': row.get('updated_at') or '',
                         'has_nonfoil': True if row.get('prices_usd') else False,
-                        'has_foil': True if row.get('prices_usd_foil') else False
+                        'has_foil': True if row.get('prices_usd_foil') else False,
+                        'has_etched': True if row.get('prices_usd_etched') else False,
+                        # Rich MTG data fields for Cube Maker sync
+                        'scryfall_id': row.get('id') or '',
+                        'mana_cost': row.get('mana_cost') or '',
+                        'type_line': row.get('type_line') or '',
+                        'oracle_text': row.get('oracle_text') or '',
+                        'keywords': row.get('keywords') or '',
+                        'power': row.get('power') or '',
+                        'toughness': row.get('toughness') or '',
+                        'rarity': row.get('rarity') or '',
+                        'color_identity': color_identity,
+                        'finish': row.get('finishes', 'nonfoil'),
+                        'frame_effects': frame_effects,
+                        'full_art': row.get('full_art') == 'True' or row.get('full_art') == True,
+                        'promo_types': promo_types,
+                        'legalities': row.get('legalities') or '{}',
                     }
                     results.append(card)
                 except Exception:

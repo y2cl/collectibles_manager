@@ -2,16 +2,21 @@
 SQLAlchemy engine and session factory.
 Uses SQLite by default (configured via DATABASE_URL in .env).
 """
+import logging
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from .config import settings
 
+logger = logging.getLogger(__name__)
+
+logger.info(f"[Database] Connecting to: {settings.database_url}")
 engine = create_engine(
     settings.database_url,
     connect_args={"check_same_thread": False},  # needed for SQLite
     echo=False,
 )
+logger.info(f"[Database] Engine created successfully")
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

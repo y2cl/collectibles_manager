@@ -41,6 +41,7 @@ export default function EditCardModal({ card, onSave, onClose }: Props) {
     serial_number:   card.serial_number ?? '',
     signed:          card.signed === 'true',
     rc:              card.rc ?? false,
+    is_proxy:        card.is_proxy ?? false,
     image_url:       card.image_url ?? '',
     paid:            String(card.paid ?? ''),
     price_usd:       String(card.price_usd ?? ''),
@@ -84,6 +85,7 @@ export default function EditCardModal({ card, onSave, onClose }: Props) {
         serial_number:   isSports ? (form.serial_number.trim() || undefined) : (isCoin ? (form.serial_number.trim() || undefined) : undefined),
         signed:          isSports ? (form.signed ? 'true' : '') : undefined,
         rc:              isSports ? (form.rc || undefined) : undefined,
+        is_proxy:        form.is_proxy || undefined,
         image_url:       form.image_url.trim() || undefined,
         paid:            parseFloat(form.paid) || 0,
         price_usd:       parseFloat(form.price_usd) || undefined,
@@ -330,6 +332,14 @@ export default function EditCardModal({ card, onSave, onClose }: Props) {
             {form.image_url && (
               <img src={form.image_url} alt="preview" style={{ marginTop: 6, maxHeight: 80, borderRadius: 4, objectFit: 'contain', alignSelf: 'flex-start' }} />
             )}
+          </label>
+
+          {/* Proxy checkbox - all card types */}
+          <label style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8, fontSize: '0.9rem', color: '#555', cursor: 'pointer', marginTop: 4 }}>
+            <input type="checkbox" checked={form.is_proxy} onChange={set('is_proxy')} style={{ width: 18, height: 18 }} />
+            <span style={{ fontWeight: form.is_proxy ? 600 : 400, color: form.is_proxy ? '#dc2626' : '#555' }}>
+              🎭 This is a PROXY / Playtest card (not an original)
+            </span>
           </label>
 
         </div>

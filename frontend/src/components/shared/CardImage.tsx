@@ -5,6 +5,7 @@ interface Props {
   alt: string;
   width?: number;
   link?: string;
+  isProxy?: boolean;
 }
 
 // Inline SVG card-back placeholder — no external dependency, never blocked.
@@ -28,7 +29,7 @@ function isLocalPath(src: string): boolean {
   );
 }
 
-export default function CardImage({ src, alt, width = 200, link }: Props) {
+export default function CardImage({ src, alt, width = 200, link, isProxy }: Props) {
   const initial = src && !isLocalPath(src) ? src : PLACEHOLDER_SVG;
   const [imgSrc, setImgSrc] = useState(initial);
 
@@ -48,12 +49,48 @@ export default function CardImage({ src, alt, width = 200, link }: Props) {
     />
   );
 
+  const content = isProxy ? (
+    <div style={{ position: 'relative', display: 'inline-block' }}>
+      {img}
+      {/* Proxy overlay badge */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 8,
+          left: 8,
+          background: 'rgba(220, 38, 38, 0.9)',  // Red with slight transparency
+          color: '#fff',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.75rem',
+          fontWeight: 700,
+          textTransform: 'uppercase',
+          letterSpacing: '0.5px',
+          boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
+          zIndex: 10,
+        }}
+      >
+        PROXY
+      </div>
+      {/* Optional: semi-transparent overlay on entire image */}
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background: 'rgba(220, 38, 38, 0.05)',  // Very subtle red tint
+          borderRadius: 4,
+          pointerEvents: 'none',
+        }}
+      />
+    </div>
+  ) : img;
+
   if (link) {
     return (
-      <a href={link} target="_blank" rel="noopener noreferrer">
-        {img}
+      <a href={link} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-block' }}>
+        {content}
       </a>
     );
   }
-  return img;
+  return content;
 }
