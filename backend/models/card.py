@@ -37,6 +37,24 @@ class CollectionCard(Base):
     print_run = Column(String, nullable=True)        # serialized print run, e.g. 23/99
     rc = Column(Boolean, default=False, nullable=True)  # rookie card
 
+    # Rich MTG data fields (for Cube Maker sync)
+    scryfall_id = Column(String, nullable=True)
+    mana_cost = Column(String, nullable=True)
+    type_line = Column(String, nullable=True)
+    oracle_text = Column(String, nullable=True)
+    keywords = Column(String, nullable=True)
+    power = Column(String, nullable=True)
+    toughness = Column(String, nullable=True)
+    rarity = Column(String, nullable=True)
+    color_identity = Column(String, nullable=True)
+    finish = Column(String, nullable=True)
+    tcg_link = Column(String, nullable=True)
+    frame_effects = Column(String, nullable=True)  # e.g. "legendary,showcase"
+    full_art = Column(Boolean, default=False, nullable=True)
+    promo_types = Column(String, nullable=True)  # e.g. "promo,boosterfun"
+    scryfall_data = Column(String, nullable=True)  # Full Scryfall JSON as text
+    legalities = Column(String, nullable=True)  # JSON string of format legalities
+
     # Pricing (MTG uses price_usd/foil/etched; Pokémon uses low/mid/market)
     price_low = Column(Float, nullable=True)
     price_mid = Column(Float, nullable=True)
@@ -68,6 +86,7 @@ class CollectionCard(Base):
     signed = Column(String, default="")
     altered = Column(String, default="")
     notes = Column(String, default="")
+    is_proxy = Column(Boolean, default=False, nullable=True)  # proxy/playtest card indicator
     timestamp = Column(DateTime, default=datetime.utcnow)
 
     owner = relationship("Owner", back_populates="cards")

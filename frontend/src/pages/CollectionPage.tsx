@@ -10,6 +10,7 @@ import WatchlistTab from '../components/collection/WatchlistTab';
 import ImportExportTab from '../components/collection/ImportExportTab';
 import ManagementTab from '../components/collection/ManagementTab';
 import EditCardModal from '../components/collection/EditCardModal';
+import CardDetailModal from '../components/shared/CardDetailModal';
 import type { CollectionCard } from '../types/card';
 
 const GAMES = ['All', 'Magic: The Gathering', 'Pokémon', 'Sports Cards', 'Collectibles', 'Coins'];
@@ -40,6 +41,7 @@ export default function CollectionPage() {
   const [activeTab, setActiveTab] = useState(0);
   const [editId, setEditId] = useState<number | null>(null);
   const [editCard, setEditCard] = useState<CollectionCard | null>(null);
+  const [detailCard, setDetailCard] = useState<CollectionCard | null>(null);
   const [sortKey, setSortKey] = useState<string>('timestamp');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
@@ -433,11 +435,12 @@ export default function CollectionPage() {
                     />
                   </td>
                   <td style={{ padding: '5px 8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 0 }}>
-                    {card.link ? (
-                      <a href={card.link} target="_blank" rel="noreferrer" style={{ color: '#4c6ef5', textDecoration: 'none' }}>
-                        {card.name}
-                      </a>
-                    ) : card.name}
+                    <span
+                      onClick={() => setDetailCard(card)}
+                      style={{ color: '#4c6ef5', textDecoration: 'none', cursor: 'pointer' }}
+                    >
+                      {card.name}
+                    </span>
                   </td>
                   <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 0 }}>
                     {/* For coins: link Series name to the series price-guide page.
@@ -480,14 +483,12 @@ export default function CollectionPage() {
                   <td>${(card.price_usd || 0).toFixed(2)}</td>
                   <td>${(card.paid || 0).toFixed(2)}</td>
                   <td style={{ padding: '5px 8px' }}>
-                    {(card.game === 'Sports Cards' || card.game === 'Collectibles' || card.game === 'Coins') && (
-                      <button
-                        onClick={() => setEditCard(card)}
-                        style={{ padding: '2px 10px', fontSize: '0.78rem', border: '1px solid #ccc', borderRadius: 4, background: '#f8f9fa', cursor: 'pointer' }}
-                      >
-                        Edit
-                      </button>
-                    )}
+                    <button
+                      onClick={() => setEditCard(card)}
+                      style={{ padding: '2px 10px', fontSize: '0.78rem', border: '1px solid #ccc', borderRadius: 4, background: '#f8f9fa', cursor: 'pointer' }}
+                    >
+                      Edit
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -502,7 +503,9 @@ export default function CollectionPage() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 12 }}>
           {filtered.map((card) => (
             <div key={card.id} style={{ textAlign: 'center' }}>
-              <CardImage src={card.image_url} alt={card.name} width={150} link={card.link} />
+              <div onClick={() => setDetailCard(card)} style={{ cursor: 'pointer', display: 'inline-block' }}>
+                <CardImage src={card.image_url} alt={card.name} width={150} isProxy={card.is_proxy} />
+              </div>
               <div style={{ fontSize: '0.75rem', marginTop: 4, color: '#555' }}>
                 {card.name} — {card.year} {card.set_name}
               </div>
@@ -533,6 +536,13 @@ export default function CollectionPage() {
           onClose={() => setEditCard(null)}
         />
       )}
+
+      {/* Card detail modal */}
+      <CardDetailModal
+        card={detailCard}
+        isOpen={!!detailCard}
+        onClose={() => setDetailCard(null)}
+      />
     </div>
   );
 }

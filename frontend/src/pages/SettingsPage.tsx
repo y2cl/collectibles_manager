@@ -6,7 +6,7 @@ import { useSettingsStore } from '../store/settingsStore';
 import { useAppearanceStore, DEFAULTS, PRESETS, FONT_OPTIONS } from '../store/appearanceStore';
 import type { AppSettings, ApiSourceConfig } from '../types/settings';
 
-const TABS = ['General', 'Appearance', 'Data Sources', 'Debug', 'Change Log', 'About'];
+const TABS = ['General', 'Appearance', 'Data Sources', 'Debug', 'Change Log', 'Integration', 'About'];
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState(0);
@@ -35,7 +35,8 @@ export default function SettingsPage() {
       {activeTab === 2 && <DataSourcesSettings />}
       {activeTab === 3 && <DebugSettings />}
       {activeTab === 4 && <ChangeLogSettings />}
-      {activeTab === 5 && <AboutSettings />}
+      {activeTab === 5 && <IntegrationSettings />}
+      {activeTab === 6 && <AboutSettings />}
     </div>
   );
 }
@@ -171,10 +172,17 @@ function GeneralSettings() {
 
 function DataSourcesSettings() {
   const qc = useQueryClient();
-  const { data: sources = [] } = useQuery({
+  const { data: sources = [], isLoading, error } = useQuery({
     queryKey: ['settings', 'api-sources'],
-    queryFn: settingsApi.getApiSources,
+    queryFn: async () => {
+      const data = await settingsApi.getApiSources();
+      console.log('[DataSources] Loaded sources:', data);
+      return data;
+    },
   });
+  
+  if (isLoading) console.log('[DataSources] Loading...');
+  if (error) console.error('[DataSources] Error:', error);
 
   const updateSources = useMutation({
     mutationFn: settingsApi.updateApiSources,
@@ -692,8 +700,178 @@ function AppPreview({ store }: { store: AppearanceState }) {
   );
 }
 
+function IntegrationSettings() {
+  // Get network hostname from window.location or default to localhost
+  const hostname = window.location.hostname || 'localhost';
+  const LOCAL_BASE = 'http://localhost:8002';
+  const NETWORK_BASE = hostname === 'localhost' 
+    ? 'http://localhost:8002' 
+    : `http://${hostname}:8002`;
+
+  const sectionStyle: React.CSSProperties = {
+    background: '#fff', border: '1px solid #e0e4f0', borderRadius: 8,
+    padding: '24px 28px', marginBottom: '1rem',
+  };
+  const headingStyle: React.CSSProperties = {
+    margin: '0 0 0.75rem', fontSize: '1rem', fontWeight: 700, color: '#222',
+  };
+  const subHeadingStyle: React.CSSProperties = {
+    margin: '1.25rem 0 0.4rem', fontSize: '0.9rem', fontWeight: 700, color: '#444',
+  };
+  const textStyle: React.CSSProperties = {
+    fontSize: '0.9rem', color: '#444', lineHeight: 1.7, margin: '0 0 0.5rem',
+  };
+  const codeBlockStyle: React.CSSProperties = {
+    background: '#f5f7ff', border: '1px solid #dde1f5', borderRadius: 6,
+    padding: '10px 14px', fontFamily: 'monospace', fontSize: '0.82rem',
+    color: '#2d3a8c', overflowX: 'auto', whiteSpace: 'pre', margin: '0.25rem 0 0.75rem',
+  };
+  const badgeStyle: React.CSSProperties = {
+    display: 'inline-block', background: '#e8f5e9', color: '#2e7d32',
+    borderRadius: 4, padding: '1px 7px', fontSize: '0.75rem',
+    fontWeight: 700, border: '1px solid #a5d6a7', marginRight: 6,
+  };
+  const methodBadge = (method: string): React.CSSProperties => ({
+    ...badgeStyle,
+    background: method === 'GET' ? '#e3f2fd' : method === 'POST' ? '#fff3e0' : '#fce4ec',
+    color: method === 'GET' ? '#1565c0' : method === 'POST' ? '#e65100' : '#880e4f',
+    border: `1px solid ${method === 'GET' ? '#90caf9' : method === 'POST' ? '#ffcc80' : '#f48fb1'}`,
+  });
+  const rowStyle: React.CSSProperties = {
+    borderBottom: '1px solid #eef0f8', padding: '8px 0', fontSize: '0.85rem',
+  };
+
+  const endpoints = [
+    {
+      method: 'GET',
+      path: '/api/collection/mtg',
+      params: 'owner_id (required), profile_id, set_code, name',
+      description: 'Returns MTG cards owned — optimized for cube/deck building. Includes quantity, variant, image, and pricing.',
+    },
+    {
+      method: 'GET',
+      path: '/api/collection',
+      params: 'owner_id (required), profile_id, game',
+      description: 'Full collection for any game type. Pass game=Magic: The Gathering to filter to MTG.',
+    },
+    {
+      method: 'GET',
+      path: '/api/sets',
+      params: 'none',
+      description: 'All MTG and Pokémon sets known to the app.',
+    },
+    {
+      method: 'GET',
+      path: '/api/search/mtg',
+      params: 'q (card name), set_hint, collector_number',
+      description: 'Search MTG cards via Scryfall. Useful for looking up a card before adding to a cube list.',
+    },
+    {
+      method: 'GET',
+      path: '/api/owners',
+      params: 'none',
+      description: 'List all owners (owner_id slugs) available in this instance.',
+    },
+  ];
+
+  return (
+    <div>
+      {/* Overview */}
+      <div style={sectionStyle}>
+        <h3 style={headingStyle}>API Integration</h3>
+        <p style={textStyle}>
+          Collectibles Manager exposes a REST API that external apps can call directly. No authentication is
+          required — the API is open to any client that can reach this server.
+        </p>
+        <p style={textStyle}>
+          The base URL for all endpoints is:
+        </p>
+        <div style={codeBlockStyle}>{LOCAL_BASE}</div>
+        {hostname !== 'localhost' && (
+          <>
+            <p style={{...textStyle, marginTop: '0.5rem'}}>
+              Or over the network:
+            </p>
+            <div style={codeBlockStyle}>{NETWORK_BASE}</div>
+          </>
+        )}
+        <p style={textStyle}>
+          To allow a different app or port to call this API, add its origin to <code>CORS_ORIGINS</code> in{' '}
+          <code>backend/.env</code>:
+        </p>
+        <div style={codeBlockStyle}>{'CORS_ORIGINS=http://localhost:5173,http://localhost:3000,http://localhost:<your-app-port>'}</div>
+      </div>
+
+      {/* Endpoints */}
+      <div style={sectionStyle}>
+        <h3 style={headingStyle}>Available Endpoints</h3>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ borderBottom: '2px solid #e0e4f0', textAlign: 'left' }}>
+              <th style={{ padding: '6px 0', fontSize: '0.8rem', color: '#888', width: 60 }}>Method</th>
+              <th style={{ padding: '6px 0', fontSize: '0.8rem', color: '#888', width: 220 }}>Path</th>
+              <th style={{ padding: '6px 0', fontSize: '0.8rem', color: '#888', width: 220 }}>Params</th>
+              <th style={{ padding: '6px 0', fontSize: '0.8rem', color: '#888' }}>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            {endpoints.map(ep => (
+              <tr key={ep.path} style={rowStyle}>
+                <td style={{ paddingRight: 8 }}><span style={methodBadge(ep.method)}>{ep.method}</span></td>
+                <td style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: '#2d3a8c', paddingRight: 8 }}>{ep.path}</td>
+                <td style={{ fontSize: '0.8rem', color: '#666', paddingRight: 8 }}>{ep.params}</td>
+                <td style={{ fontSize: '0.82rem', color: '#444' }}>{ep.description}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Example: fetch MTG collection */}
+      <div style={sectionStyle}>
+        <h3 style={headingStyle}>Example: Fetch Your MTG Collection</h3>
+        <p style={textStyle}>JavaScript fetch call from an external app:</p>
+        <div style={codeBlockStyle}>{'const res = await fetch(\n  "' + LOCAL_BASE + '/api/collection/mtg?owner_id=YOUR_OWNER_ID"\n);\nconst data = await res.json();\n// data.cards  — array of MTG cards\n// data.total_cards — total copies owned\n// data.unique_cards — number of distinct cards'}</div>
+
+        <h4 style={subHeadingStyle}>Response shape (per card)</h4>
+        <div style={codeBlockStyle}>{`{
+  "id": 42,
+  "name": "Lightning Bolt",
+  "set_name": "Magic 2011",
+  "set_code": "m11",
+  "card_number": "149",
+  "variant": "nonfoil",
+  "quantity": 4,
+  "image_url": "https://cards.scryfall.io/...",
+  "price_usd": 1.25,
+  "price_usd_foil": 4.50,
+  "price_usd_etched": null,
+  "link": "https://scryfall.com/card/m11/149"
+}`}</div>
+
+        <h4 style={subHeadingStyle}>Filter by set or name</h4>
+        <div style={codeBlockStyle}>{`// Only cards from the "Double Masters 2022" set
+/api/collection/mtg?owner_id=YOUR_OWNER_ID&set_code=2x2
+
+// Cards matching a name fragment
+/api/collection/mtg?owner_id=YOUR_OWNER_ID&name=bolt`}</div>
+      </div>
+
+      {/* Docs link */}
+      <div style={{ ...sectionStyle, background: '#fafbff' }}>
+        <h3 style={headingStyle}>Interactive API Docs</h3>
+        <p style={textStyle}>
+          FastAPI generates interactive documentation automatically. Open either link while the backend is running:
+        </p>
+        <div style={codeBlockStyle}>{`${LOCAL_BASE}/docs       ← Swagger UI (try endpoints live)
+${LOCAL_BASE}/redoc      ← ReDoc (clean reference)`}</div>
+      </div>
+    </div>
+  );
+}
+
 function AboutSettings() {
-  const APP_VERSION = '2.3.0';
+  const APP_VERSION = '2.4.0';
 
   const sectionStyle: React.CSSProperties = {
     background: '#fff', border: '1px solid #e0e4f0', borderRadius: 8,

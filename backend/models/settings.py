@@ -27,6 +27,10 @@ class AppSettings(Base):
     # last_ebay_env, pokemontcg_api
     api_source_config = Column(JSON, default=dict)
 
+    # Search UI preferences (persisted across devices)
+    search_cards_per_row = Column(Integer, default=4)
+    search_sort_by = Column(String, default="default")  # "default" | "name" | "set" | "year"
+
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 

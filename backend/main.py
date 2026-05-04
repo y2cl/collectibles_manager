@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Collectibles Manager API",
     description="FastAPI backend for the Collectibles Manager (MTG, Pokémon, Baseball)",
-    version="2.0.0",
+    version="2.4.0",
     lifespan=lifespan,
 )
 
@@ -66,4 +66,10 @@ app.include_router(dev_router)
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "2.0.0"}
+    return {"status": "ok", "version": "2.4.0"}
+
+
+@app.get("/health")
+def health_root():
+    """Root health endpoint for external integrations (e.g., MTG Cube Maker)"""
+    return {"status": "ok", "version": "2.4.0"}

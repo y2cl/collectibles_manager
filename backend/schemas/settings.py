@@ -20,6 +20,8 @@ class AppSettingsRead(BaseModel):
     auto_backup_enabled: bool = False
     backup_retention: int = 5
     api_source_config: Dict[str, Any] = {}
+    search_cards_per_row: int = 4
+    search_sort_by: str = "default"
 
     class Config:
         from_attributes = True
@@ -30,6 +32,8 @@ class AppSettingsUpdate(BaseModel):
     paid_merge_strategy: Optional[str] = None
     auto_backup_enabled: Optional[bool] = None
     backup_retention: Optional[int] = None
+    search_cards_per_row: Optional[int] = None
+    search_sort_by: Optional[str] = None
 
 
 class ApiSourceUpdate(BaseModel):

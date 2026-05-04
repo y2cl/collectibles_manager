@@ -51,7 +51,7 @@ const emptyComicsForm = () => ({
 
 export default function HomePage() {
   const [game, setGame] = useState<Game>('mtg');
-  const { cardsPerRow, imageWidth } = useSettingsStore();
+  const { imageWidth } = useSettingsStore();
   const { currentOwnerId, currentProfileId } = useOwnerStore();
   const forceRefreshSearch = useForceRefreshSearch();
   const addCard = useAddCard();
@@ -381,7 +381,6 @@ export default function HomePage() {
             source={coinResult.data?.source}
             total={coinResult.data?.total}
             loading={coinResult.isLoading}
-            cardsPerRow={cardsPerRow}
             imageWidth={imageWidth}
             onRefreshFromApi={() => forceRefreshSearch('coins', coinParams)}
           />
@@ -445,7 +444,6 @@ export default function HomePage() {
                 source={comicFindIssueResult.data?.source}
                 total={comicFindIssueResult.data?.total}
                 loading={comicFindIssueResult.isLoading}
-                cardsPerRow={cardsPerRow}
                 imageWidth={imageWidth}
               />
               {comicFindIssueResult.data && comicFindIssueResult.data.cards.length === 0 && !comicFindIssueResult.isLoading && findIssueSearch && (
@@ -597,7 +595,6 @@ export default function HomePage() {
                 source={comicIssueResult.data?.source}
                 total={comicIssueResult.data?.total}
                 loading={comicIssueResult.isLoading}
-                cardsPerRow={cardsPerRow}
                 imageWidth={imageWidth}
               />
               {comicIssueResult.data && comicIssueResult.data.cards.length === 0 && !comicIssueResult.isLoading && (
@@ -961,7 +958,6 @@ export default function HomePage() {
           source={mtgResult.data?.source}
           total={mtgResult.data?.total}
           loading={mtgResult.isLoading}
-          cardsPerRow={cardsPerRow}
           imageWidth={imageWidth}
           onRefreshFromApi={() => forceRefreshSearch('mtg', mtgParams)}
         />
@@ -972,7 +968,6 @@ export default function HomePage() {
           source={pkmnResult.data?.source}
           total={pkmnResult.data?.total}
           loading={pkmnResult.isLoading}
-          cardsPerRow={cardsPerRow}
           imageWidth={imageWidth}
           onRefreshFromApi={() => forceRefreshSearch('pokemon', pkmnParams)}
         />

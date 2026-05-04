@@ -75,6 +75,17 @@ export default function AddToCollectionButton({ card, selectedVariant, onVariant
       coin_or_bill:    card.coin_or_bill,
       silver_amount:   card.silver_amount,
       mint_mark:       card.mint_mark,
+      // Rich MTG data fields
+      scryfall_id:     card.scryfall_id,
+      mana_cost:       card.mana_cost,
+      type_line:       card.type_line,
+      oracle_text:     card.oracle_text,
+      keywords:        card.keywords,
+      power:           card.power,
+      toughness:       card.toughness,
+      rarity:          card.rarity,
+      color_identity:  card.color_identity,
+      finish:          isMtg ? (variant || 'nonfoil') : card.finish,
     });
   };
 

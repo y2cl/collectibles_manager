@@ -54,6 +54,17 @@ def _to_card_result(card: dict) -> CardResult:
         publisher=card.get("publisher"),
         is_key_issue=card.get("is_key_issue", False),
         cgc_cert_number=card.get("cgc_cert_number"),
+        # Rich MTG data fields
+        scryfall_id=card.get("scryfall_id"),
+        mana_cost=card.get("mana_cost"),
+        type_line=card.get("type_line"),
+        oracle_text=card.get("oracle_text"),
+        keywords=card.get("keywords"),
+        power=card.get("power"),
+        toughness=card.get("toughness"),
+        rarity=card.get("rarity"),
+        color_identity=card.get("color_identity"),
+        finish=card.get("finish"),
     )
 
 

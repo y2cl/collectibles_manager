@@ -98,6 +98,25 @@ def search_mtg_scryfall(
                     else ""
                 )
 
+                # Extract color identity
+                color_identity = "".join(c.get("color_identity", []))
+
+                # Determine finish from Scryfall data
+                has_foil = c.get("foil", False)
+                has_nonfoil = c.get("nonfoil", True)
+                has_etched = c.get("etched", False)
+                if has_etched:
+                    finish = "etched"
+                elif has_foil:
+                    finish = "foil"
+                else:
+                    finish = "nonfoil"
+                
+                # Extract frame effects and other metadata
+                frame_effects = c.get("frame_effects", [])
+                full_art = c.get("full_art", False)
+                promo_types = c.get("promo_types", [])
+                
                 card = {
                     "game": "Magic: The Gathering",
                     "name": c.get("name", ""),
@@ -113,10 +132,27 @@ def search_mtg_scryfall(
                     "image_url_back": img_back or "",
                     "link": c.get("scryfall_uri", ""),
                     "quantity": 1,
-                    "variant": "",
+                    "variant": finish,  # Standardize variant to match finish
                     "source": "Scryfall",
                     "has_nonfoil": has_nonfoil,
                     "has_foil": has_foil,
+                    "has_etched": has_etched,
+                    # Rich MTG data fields for Cube Maker sync
+                    "scryfall_id": c.get("id", ""),
+                    "mana_cost": c.get("mana_cost", ""),
+                    "type_line": c.get("type_line", ""),
+                    "oracle_text": c.get("oracle_text", ""),
+                    "keywords": "; ".join(c.get("keywords", [])),
+                    "power": c.get("power", ""),
+                    "toughness": c.get("toughness", ""),
+                    "rarity": c.get("rarity", ""),
+                    "color_identity": color_identity,
+                    "finish": finish,
+                    "frame_effects": "; ".join(frame_effects),
+                    "full_art": full_art,
+                    "promo_types": "; ".join(promo_types),
+                    "scryfall_data": c,  # Store full Scryfall data for future use
+                    "legalities": c.get("legalities", {}),  # Format: {"commander": "legal", ...}
                 }
                 cards.append(card)
 
@@ -124,9 +160,10 @@ def search_mtg_scryfall(
                 if fallback_enabled:
                     try:
                         from ..legacy.fallback_manager import store_mtg_card
-                        store_mtg_card(c)
-                    except Exception:
-                        pass
+                        result = store_mtg_card(c)
+                        logger.debug("Cached card %s: %s", c.get("name", "unknown"), "success" if result else "failed")
+                    except Exception as e:
+                        logger.warning("Failed to cache card %s: %s", c.get("name", "unknown"), e)
             except Exception:
                 continue
 

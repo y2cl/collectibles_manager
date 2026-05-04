@@ -137,6 +137,9 @@ def _fetch_scryfall_card(scryfall_id: str) -> Optional[Dict]:
         if not artist and faces:
             artist = (faces[0].get("artist") or "")
 
+        # Extract color identity from Scryfall data
+        color_identity = "".join(c.get("color_identity", []))
+
         return {
             "game":             "Magic: The Gathering",
             "name":             c.get("name", ""),
@@ -150,6 +153,17 @@ def _fetch_scryfall_card(scryfall_id: str) -> Optional[Dict]:
             "price_usd":        _p("usd"),
             "price_usd_foil":   _p("usd_foil"),
             "price_usd_etched": _p("usd_etched"),
+            # Rich MTG data fields for Cube Maker sync
+            "scryfall_id":      c.get("id", ""),
+            "mana_cost":        c.get("mana_cost", ""),
+            "type_line":        c.get("type_line", ""),
+            "oracle_text":      c.get("oracle_text", ""),
+            "keywords":         "; ".join(c.get("keywords", [])),
+            "power":            c.get("power", ""),
+            "toughness":        c.get("toughness", ""),
+            "rarity":           c.get("rarity", ""),
+            "color_identity":   color_identity,
+            "finish":           "foil" if c.get("foil") else "nonfoil",
         }
     except Exception as e:
         logger.warning("Scryfall ID fetch error for %s: %s", scryfall_id, e)
